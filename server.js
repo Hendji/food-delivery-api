@@ -1,17 +1,3 @@
-const ADMIN_API_KEY = process.env.ADMIN_API_KEY;
-const JWT_SECRET = process.env.JWT_SECRET;
-
-console.log('🔑 ADMIN_API_KEY:', ADMIN_API_KEY ? 'Установлен' : 'НЕ УСТАНОВЛЕН!');
-console.log('🔐 JWT_SECRET:', JWT_SECRET ? 'Установлен' : 'НЕ УСТАНОВЛЕН!');
-
-if (!ADMIN_API_KEY) {
-  console.error('❌ ОШИБКА: ADMIN_API_KEY не установлен!');
-}
-
-if (!JWT_SECRET) {
-  console.error('❌ ОШИБКА: JWT_SECRET не установлен!');
-}
-
 const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
