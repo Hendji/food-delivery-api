@@ -28,43 +28,109 @@ let isDatabaseConnected = false;
 // Функция инициализации подключения к базе
 async function initializeDatabase() {
   try {
-    const databaseUrl = process.env.DATABASE_URL;
+    // Проверяем разные возможные источники подключения
+    const databaseUrl = process.env.DATABASE_URL || 
+                       (process.env.PGHOST ? 
+                         `postgresql://${process.env.PGUSER}:${process.env.PGPASSWORD}@${process.env.PGHOST}:${process.env.PGPORT || 5432}/${process.env.PGDATABASE}` : 
+                         null);
 
-    log(`🔍 Проверяем DATABASE_URL: ${databaseUrl ? 'присутствует' : 'отсутствует'}`);
-
+    log(`🔍 Проверяем подключение к БД...`);
+    log(`   DATABASE_URL: ${process.env.DATABASE_URL ? 'присутствует' : 'отсутствует'}`);
+    log(`   PGHOST: ${process.env.PGHOST || 'не установлен'}`);
+    log(`   PGUSER: ${process.env.PGUSER || 'не установлен'}`);
+    
     if (!databaseUrl) {
-      log('⚠️ DATABASE_URL не найден. Используем мок-режим.');
+      log('⚠️ Не найдены данные для подключения к БД. Используем мок-режим.');
+      log('💡 Подсказка: Добавьте PostgreSQL в Railway или установите DATABASE_URL');
       return;
     }
 
-    log('🔗 Настраиваем подключение к PostgreSQL...');
-
+    log('🔗 Пытаемся подключиться к PostgreSQL...');
+    
+    // Создаем пул соединений с оптимизированными настройками для Railway
     pool = new Pool({
       connectionString: databaseUrl,
       ssl: {
         rejectUnauthorized: false
       },
       max: 5,
+      min: 1,
       idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 5000
+      connectionTimeoutMillis: 10000,
+      maxUses: 7500
     });
 
     // Тестируем подключение
+    log('🧪 Тестируем подключение...');
     const client = await pool.connect();
-    log('✅ PostgreSQL подключен успешно!');
+    
+    // Проверяем версию PostgreSQL
+    const versionResult = await client.query('SELECT version()');
+    log(`✅ PostgreSQL подключен! Версия: ${versionResult.rows[0].version.split(' ')[1]}`);
     
     // Создаем/обновляем таблицы
     await createOrUpdateTables(client);
     
     client.release();
     isDatabaseConnected = true;
+    
+    // Периодическая проверка соединения
+    setInterval(async () => {
+      try {
+        await pool.query('SELECT 1');
+      } catch (err) {
+        log(`⚠️ Потеряно соединение с БД: ${err.message}`);
+        isDatabaseConnected = false;
+      }
+    }, 30000);
 
   } catch (error) {
-    log(`❌ Ошибка подключения к PostgreSQL: ${error.message}`);
+    log(`❌ Критическая ошибка подключения к PostgreSQL:`);
+    log(`   Сообщение: ${error.message}`);
+    log(`   Код: ${error.code}`);
+    log(`   Детали: ${error.stack}`);
+    
+    if (error.code === 'ECONNREFUSED') {
+      log('💡 Подсказка: Проверьте, что PostgreSQL запущен в Railway');
+    } else if (error.code === '28P01') {
+      log('💡 Подсказка: Неверный логин/пароль для БД');
+    } else if (error.message.includes('does not exist')) {
+      log('💡 Подсказка: База данных не существует. Создайте ее в Railway');
+    }
+    
     log('📝 Приложение будет работать в мок-режиме без базы данных');
     isDatabaseConnected = false;
   }
 }
+
+// Эндпоинт для детальной информации о подключении к БД
+app.get('/debug/db', async (req, res) => {
+  try {
+    const dbInfo = {
+      hasDatabaseUrl: !!process.env.DATABASE_URL,
+      hasPgVariables: !!(process.env.PGHOST && process.env.PGUSER && process.env.PGDATABASE),
+      nodeEnv: process.env.NODE_ENV,
+      isConnected: isDatabaseConnected,
+      connectionStringPreview: process.env.DATABASE_URL ? 
+        process.env.DATABASE_URL.replace(/:[^:@]+@/, ':****@') : 'не установлен'
+    };
+
+    if (isDatabaseConnected && pool) {
+      try {
+        const result = await pool.query('SELECT current_database() as db, current_user as user, version() as version');
+        dbInfo.database = result.rows[0].db;
+        dbInfo.user = result.rows[0].user;
+        dbInfo.version = result.rows[0].version.split(' ')[1];
+      } catch (err) {
+        dbInfo.queryError = err.message;
+      }
+    }
+
+    res.json(dbInfo);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 
 // Функция создания/обновления таблиц
 async function createOrUpdateTables(client) {
