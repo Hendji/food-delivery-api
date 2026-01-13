@@ -8,27 +8,22 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 8000;
 
-// Middleware
 app.use(cors());
 app.use(express.json());
 
-// Функция для логирования (полезно для дебага)
 function log(message) {
   console.log(`[${new Date().toISOString()}] ${message}`);
 }
 
-// Конфигурация безопасности
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-in-production';
 const ADMIN_API_KEY = process.env.ADMIN_API_KEY || 'dev-admin-key';
 
-// PostgreSQL подключение
 let pool;
 let isDatabaseConnected = false;
 
-// Функция инициализации подключения к базе
 async function initializeDatabase() {
   try {
-    // Проверяем разные возможные источники подключения
+
     const databaseUrl = process.env.DATABASE_URL || 
                        (process.env.PGHOST ? 
                          `postgresql://${process.env.PGUSER}:${process.env.PGPASSWORD}@${process.env.PGHOST}:${process.env.PGPORT || 5432}/${process.env.PGDATABASE}` : 
@@ -47,7 +42,7 @@ async function initializeDatabase() {
 
     log('🔗 Пытаемся подключиться к PostgreSQL...');
     
-    // Создаем пул соединений с оптимизированными настройками для Railway
+
     pool = new Pool({
       connectionString: databaseUrl,
       ssl: {
@@ -60,21 +55,17 @@ async function initializeDatabase() {
       maxUses: 7500
     });
 
-    // Тестируем подключение
     log('🧪 Тестируем подключение...');
     const client = await pool.connect();
     
-    // Проверяем версию PostgreSQL
     const versionResult = await client.query('SELECT version()');
     log(`✅ PostgreSQL подключен! Версия: ${versionResult.rows[0].version.split(' ')[1]}`);
     
-    // Создаем/обновляем таблицы
     await createOrUpdateTables(client);
     
     client.release();
     isDatabaseConnected = true;
     
-    // Периодическая проверка соединения
     setInterval(async () => {
       try {
         await pool.query('SELECT 1');
@@ -103,7 +94,6 @@ async function initializeDatabase() {
   }
 }
 
-// Эндпоинт для детальной информации о подключении к БД
 app.get('/debug/db', async (req, res) => {
   try {
     const dbInfo = {
@@ -132,10 +122,8 @@ app.get('/debug/db', async (req, res) => {
   }
 });
 
-// Функция создания/обновления таблиц
 async function createOrUpdateTables(client) {
   try {
-    // === ТАБЛИЦА ПОЛЬЗОВАТЕЛЕЙ ===
     await client.query(`
       CREATE TABLE IF NOT EXISTS users (
         id SERIAL PRIMARY KEY,
@@ -151,15 +139,12 @@ async function createOrUpdateTables(client) {
     `);
     log('✅ Таблица users создана/проверена');
 
-    // Добавляем столбец role если его нет
     try {
       await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(20) DEFAULT \'user\'');
       await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS telegram_chat_id BIGINT');
     } catch (e) {
-      // Игнорируем если столбец уже существует
     }
 
-    // === ТАБЛИЦА РЕСТОРАНОВ ===
     await client.query(`
       CREATE TABLE IF NOT EXISTS restaurants (
         id SERIAL PRIMARY KEY,
@@ -176,14 +161,11 @@ async function createOrUpdateTables(client) {
     `);
     log('✅ Таблица restaurants создана/проверена');
 
-    // Добавляем is_active если его нет
     try {
       await client.query('ALTER TABLE restaurants ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true');
     } catch (e) {
-      // Игнорируем если столбец уже существует
     }
 
-    // === ТАБЛИЦА БЛЮД ===
     await client.query(`
       CREATE TABLE IF NOT EXISTS dishes (
         id SERIAL PRIMARY KEY,
@@ -202,16 +184,12 @@ async function createOrUpdateTables(client) {
     `);
     log('✅ Таблица dishes создана/проверена');
 
-    // Добавляем is_available если его нет
     try {
       await client.query('ALTER TABLE dishes ADD COLUMN IF NOT EXISTS is_available BOOLEAN DEFAULT true');
     } catch (e) {
-      // Игнорируем если столбец уже существует
     }
 
-    // === ОСТАЛЬНЫЕ ТАБЛИЦЫ (как в старом файле) ===
     
-    // Таблица заказов
     await client.query(`
       CREATE TABLE IF NOT EXISTS orders (
         id SERIAL PRIMARY KEY,
@@ -228,7 +206,6 @@ async function createOrUpdateTables(client) {
     `);
     log('✅ Таблица orders создана/проверена');
 
-    // Таблица элементов заказа
     await client.query(`
       CREATE TABLE IF NOT EXISTS order_items (
         id SERIAL PRIMARY KEY,
@@ -241,7 +218,6 @@ async function createOrUpdateTables(client) {
     `);
     log('✅ Таблица order_items создана/проверена');
 
-    // Добавляем тестовые данные если таблицы пустые
     await addTestDataIfNeeded(client);
 
   } catch (error) {
@@ -250,16 +226,13 @@ async function createOrUpdateTables(client) {
   }
 }
 
-// Добавление тестовых данных
 async function addTestDataIfNeeded(client) {
   try {
-    // Проверяем есть ли рестораны
     const restaurantsCount = await client.query('SELECT COUNT(*) FROM restaurants');
     
     if (parseInt(restaurantsCount.rows[0].count) === 0) {
       log('🌱 Добавляем тестовые данные...');
       
-      // Добавляем рестораны
       await client.query(`
         INSERT INTO restaurants (name, description, image_url, rating, delivery_time, delivery_price, categories, is_active) 
         VALUES 
@@ -267,7 +240,6 @@ async function addTestDataIfNeeded(client) {
         ('Бургер Кинг', 'Бургеры, картофель фри, напитки', 'https://images.unsplash.com/photo-1568901346375-23c9450c58cd?w=400', 4.5, '20-30 мин', '99 ₽', ARRAY['Бургеры', 'Фастфуд'], true)
       `);
       
-      // Добавляем блюда
       await client.query(`
         INSERT INTO dishes (restaurant_id, name, description, image_url, price, ingredients, preparation_time, is_vegetarian, is_spicy, is_available) 
         VALUES 
@@ -276,7 +248,6 @@ async function addTestDataIfNeeded(client) {
         (2, 'Чизбургер', 'Классический бургер с сыром', 'https://images.unsplash.com/photo-1568901346375-23c9450c58cd?w=400', 299.00, ARRAY['Булочка', 'Говяжья котлета', 'Сыр', 'Лук', 'Кетчуп'], 15, false, false, true)
       `);
       
-      // Добавляем тестового пользователя
       const hashedPassword = await bcrypt.hash('password123', 10);
       await client.query(`
         INSERT INTO users (name, email, password, phone, role) 
@@ -291,14 +262,11 @@ async function addTestDataIfNeeded(client) {
   }
 }
 
-// ===== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =====
 
-// Получение ID пользователя из JWT токена
 function getUserIdFromToken(req) {
   const authHeader = req.headers['authorization'];
   
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    // Пробуем старый метод для обратной совместимости
     const userId = req.headers['x-user-id'];
     if (userId && !isNaN(parseInt(userId))) {
       return parseInt(userId);
@@ -326,13 +294,11 @@ function getUserIdFromToken(req) {
   }
 }
 
-// Проверка API ключа для Telegram бота
 function validateAdminApiKey(req) {
   const apiKey = req.headers['x-admin-api-key'];
   return apiKey === ADMIN_API_KEY;
 }
 
-// ===== СУЩЕСТВУЮЩИЕ ЭНДПОИНТЫ (как в старом файле) =====
 
 app.get('/', (req, res) => {
   res.json({
@@ -362,14 +328,12 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Регистрация пользователя (ОБНОВЛЕНА с хешированием пароля)
 app.post('/register', async (req, res) => {
   try {
     const { name, email, password, phone } = req.body;
 
     log(`📝 Регистрация: ${name} (${email})`);
 
-    // Валидация
     if (!name || !email || !password) {
       return res.status(400).json({
         success: false,
@@ -377,10 +341,8 @@ app.post('/register', async (req, res) => {
       });
     }
 
-    // Если база подключена, сохраняем в базу
     if (isDatabaseConnected && pool) {
       try {
-        // Проверяем существующего пользователя
         const existingUser = await pool.query(
           'SELECT * FROM users WHERE email = $1',
           [email]
@@ -393,10 +355,8 @@ app.post('/register', async (req, res) => {
           });
         }
 
-        // Хешируем пароль
         const hashedPassword = await bcrypt.hash(password, 10);
 
-        // Создаем нового пользователя
         const newUser = await pool.query(
           `INSERT INTO users (name, email, password, phone)
            VALUES ($1, $2, $3, $4)
@@ -406,7 +366,6 @@ app.post('/register', async (req, res) => {
 
         const user = newUser.rows[0];
 
-        // Генерируем JWT токен
         const token = jwt.sign(
           { id: user.id, email: user.email },
           JWT_SECRET,
@@ -432,7 +391,6 @@ app.post('/register', async (req, res) => {
         return sendMockRegistration(res, name, email, phone);
       }
     } else {
-      // Мок-режим
       sendMockRegistration(res, name, email, phone);
     }
 
@@ -445,7 +403,6 @@ app.post('/register', async (req, res) => {
   }
 });
 
-// Вход пользователя (ОБНОВЛЕН с проверкой хеша)
 app.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -459,7 +416,6 @@ app.post('/login', async (req, res) => {
       });
     }
 
-    // Если база подключена, ищем пользователя
     if (isDatabaseConnected && pool) {
       try {
         const userResult = await pool.query(
@@ -476,7 +432,6 @@ app.post('/login', async (req, res) => {
 
         const user = userResult.rows[0];
         
-        // Проверяем пароль
         const validPassword = await bcrypt.compare(password, user.password);
         
         if (!validPassword) {
@@ -486,7 +441,6 @@ app.post('/login', async (req, res) => {
           });
         }
 
-        // Генерируем JWT токен
         const token = jwt.sign(
           { id: user.id, email: user.email, role: user.role },
           JWT_SECRET,
@@ -513,7 +467,6 @@ app.post('/login', async (req, res) => {
         return sendMockLogin(res, email);
       }
     } else {
-      // Мок-режим
       sendMockLogin(res, email);
     }
 
@@ -526,7 +479,6 @@ app.post('/login', async (req, res) => {
   }
 });
 
-// Функция для мок-регистрации
 function sendMockRegistration(res, name, email, phone) {
   const mockToken = jwt.sign(
     { id: Date.now(), email: email },
@@ -549,7 +501,6 @@ function sendMockRegistration(res, name, email, phone) {
   });
 }
 
-// Функция для мок-входа
 function sendMockLogin(res, email) {
   const mockToken = jwt.sign(
     { id: 1, email: email, role: 'user' },
@@ -573,15 +524,11 @@ function sendMockLogin(res, email) {
   });
 }
 
-// === НОВЫЕ ЭНДПОИНТЫ ДЛЯ ПУБЛИЧНОГО API ===
-
-// Получение списка активных ресторанов
 app.get('/restaurants', async (req, res) => {
   try {
     log('🍽️ Запрос списка ресторанов');
 
     if (isDatabaseConnected && pool) {
-      // Используем is_active для фильтрации
       const result = await pool.query(
         `SELECT id, name, description, image_url, rating,
                 delivery_time, delivery_price, categories
@@ -593,7 +540,6 @@ app.get('/restaurants', async (req, res) => {
       res.json(result.rows);
       
     } else {
-      // Мок-данные
       res.json([
         {
           id: 1,
@@ -614,14 +560,12 @@ app.get('/restaurants', async (req, res) => {
   }
 });
 
-// Получение меню ресторана
 app.get('/restaurants/:id/menu', async (req, res) => {
   try {
     const restaurantId = req.params.id;
     log(`📋 Запрос меню для ресторана ${restaurantId}`);
 
     if (isDatabaseConnected && pool) {
-      // Используем is_available для фильтрации
       const result = await pool.query(
         `SELECT id, name, description, image_url, price,
                 ingredients, preparation_time, 
@@ -635,7 +579,6 @@ app.get('/restaurants/:id/menu', async (req, res) => {
       res.json(result.rows);
       
     } else {
-      // Мок-данные
       res.json([
         {
           id: 1,
@@ -657,12 +600,8 @@ app.get('/restaurants/:id/menu', async (req, res) => {
   }
 });
 
-// === ЭНДПОИНТЫ ДЛЯ TELEGRAM БОТА ===
-
-// Переключение доступности блюда
 app.post('/bot/dish/:id/toggle', async (req, res) => {
   try {
-    // Проверяем API ключ
     if (!validateAdminApiKey(req)) {
       return res.status(401).json({ 
         error: 'Неверный API ключ',
@@ -680,7 +619,6 @@ app.post('/bot/dish/:id/toggle', async (req, res) => {
     const dishId = req.params.id;
     log(`🔄 Переключение доступности блюда ${dishId}`);
 
-    // Переключаем is_available
     const result = await pool.query(
       `UPDATE dishes 
        SET is_available = NOT is_available
@@ -715,7 +653,6 @@ app.post('/bot/dish/:id/toggle', async (req, res) => {
   }
 });
 
-// Получение информации о блюде
 app.get('/bot/dish/:id', async (req, res) => {
   try {
     if (!validateAdminApiKey(req)) {
@@ -760,7 +697,6 @@ app.get('/users/me', async (req, res) => {
       });
     }
 
-    // Если база подключена, получаем данные из БД
     if (isDatabaseConnected && pool) {
       try {
         const userResult = await pool.query(
@@ -792,7 +728,6 @@ app.get('/users/me', async (req, res) => {
         });
       }
     } else {
-      // Мок-режим
       res.json({
         id: userId,
         name: 'Иван Иванов',
@@ -809,7 +744,6 @@ app.get('/users/me', async (req, res) => {
   }
 });
 
-// Статистика заказов
 app.get('/users/me/stats', async (req, res) => {
   try {
     const userId = getUserIdFromToken(req);
@@ -822,10 +756,8 @@ app.get('/users/me/stats', async (req, res) => {
 
     log(`📊 Запрос статистики для пользователя ${userId}`);
 
-    // Если база подключена, получаем статистику из БД
     if (isDatabaseConnected && pool) {
       try {
-        // Общее количество заказов
         const totalOrdersResult = await pool.query(
           'SELECT COUNT(*) as count FROM orders WHERE user_id = $1',
           [userId]
@@ -833,7 +765,6 @@ app.get('/users/me/stats', async (req, res) => {
         
         const totalOrders = parseInt(totalOrdersResult.rows[0].count) || 0;
 
-        // Доставленные заказы
         const deliveredOrdersResult = await pool.query(
           'SELECT COUNT(*) as count FROM orders WHERE user_id = $1 AND status = $2',
           [userId, 'delivered']
@@ -841,7 +772,6 @@ app.get('/users/me/stats', async (req, res) => {
         
         const deliveredOrders = parseInt(deliveredOrdersResult.rows[0].count) || 0;
 
-        // Заказы в обработке
         const pendingOrdersResult = await pool.query(
           'SELECT COUNT(*) as count FROM orders WHERE user_id = $1 AND status = $2',
           [userId, 'pending']
@@ -849,7 +779,6 @@ app.get('/users/me/stats', async (req, res) => {
         
         const pendingOrders = parseInt(pendingOrdersResult.rows[0].count) || 0;
 
-        // Общая сумма
         const totalSpentResult = await pool.query(
           'SELECT COALESCE(SUM(total_amount), 0) as total FROM orders WHERE user_id = $1',
           [userId]
@@ -857,10 +786,8 @@ app.get('/users/me/stats', async (req, res) => {
         
         const totalSpent = parseFloat(totalSpentResult.rows[0].total) || 0;
 
-        // Средний чек
         const averageOrderValue = totalOrders > 0 ? Math.round(totalSpent / totalOrders) : 0;
 
-        // Любимый ресторан
         const favoriteRestaurantResult = await pool.query(
           `SELECT restaurant_name, COUNT(*) as order_count 
            FROM orders 
@@ -891,7 +818,6 @@ app.get('/users/me/stats', async (req, res) => {
         });
       }
     } else {
-      // Мок-режим (только для пользователя с ID=1)
       if (userId === 1) {
         res.json({
           total_orders: 5,
@@ -902,7 +828,6 @@ app.get('/users/me/stats', async (req, res) => {
           favorite_restaurant: 'Пицца Мания'
         });
       } else {
-        // Для новых пользователей пустая статистика
         res.json({
           total_orders: 0,
           delivered_orders: 0,
@@ -920,7 +845,6 @@ app.get('/users/me/stats', async (req, res) => {
   }
 });
 
-// История заказов
 app.get('/users/me/orders', async (req, res) => {
   try {
     const userId = getUserIdFromToken(req);
@@ -933,10 +857,8 @@ app.get('/users/me/orders', async (req, res) => {
 
     log(`📦 Запрос истории заказов для пользователя ${userId}`);
 
-    // Если база подключена, получаем заказы из БД
     if (isDatabaseConnected && pool) {
       try {
-        // Получаем основные данные заказов
         const ordersResult = await pool.query(
           `SELECT o.*, 
            json_agg(
@@ -955,7 +877,6 @@ app.get('/users/me/orders', async (req, res) => {
           [userId]
         );
 
-        // Форматируем ответ
         const orders = ordersResult.rows.map(order => ({
           id: order.id.toString(),
           restaurant_name: order.restaurant_name,
@@ -973,11 +894,9 @@ app.get('/users/me/orders', async (req, res) => {
       } catch (dbError) {
         log(`❌ Ошибка базы при получении заказов: ${dbError.message}`);
         
-        // В случае ошибки БД возвращаем пустой массив
         res.json({ orders: [] });
       }
     } else {
-      // Мок-режим (только для пользователя с ID=1)
       if (userId === 1) {
         const mockOrders = [
           {
@@ -1039,7 +958,6 @@ app.get('/users/me/orders', async (req, res) => {
         
         res.json({ orders: mockOrders });
       } else {
-        // Для новых пользователей пустая история
         res.json({ orders: [] });
       }
     }
@@ -1050,14 +968,11 @@ app.get('/users/me/orders', async (req, res) => {
   }
 });
 
-// ===== ЗАПУСК СЕРВЕРА =====
 
 async function startServer() {
   try {
-    // Инициализируем базу данных
     await initializeDatabase();
 
-    // Запускаем сервер
     app.listen(PORT, () => {
       log(`\n🚀 Сервер запущен!`);
       log(`📡 Порт: ${PORT}`);
@@ -1066,7 +981,6 @@ async function startServer() {
       log(`🔐 JWT_SECRET: ${JWT_SECRET ? 'Установлен' : 'Используется дефолтный'}`);
       log(`🔑 ADMIN_API_KEY: ${ADMIN_API_KEY ? 'Установлен' : 'Используется дефолтный'}`);
 
-      // Показываем URL для доступа
       if (process.env.RAILWAY_PUBLIC_DOMAIN) {
         log(`🌍 Public URL: https://${process.env.RAILWAY_PUBLIC_DOMAIN}`);
       } else if (process.env.RAILWAY_STATIC_URL) {
@@ -1077,7 +991,6 @@ async function startServer() {
         log(`🌍 Local URL: http://localhost:${PORT}`);
       }
       
-      // Показываем эндпоинты для Telegram бота
       log(`\n🤖 Эндпоинты для Telegram бота:`);
       log(`   🔄 Переключить блюдо: POST /bot/dish/:id/toggle`);
       log(`   📋 Информация о блюде: GET /bot/dish/:id`);
@@ -1090,5 +1003,4 @@ async function startServer() {
   }
 }
 
-// Запускаем сервер
 startServer();
