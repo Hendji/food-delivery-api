@@ -155,7 +155,7 @@ async function createOrUpdateTables(client) {
         delivery_time VARCHAR(50),
         delivery_price VARCHAR(50),
         categories TEXT[],
-        is_active BOOLEAN DEFAULT true,  // ДОБАВЛЕНО ДЛЯ ФИЛЬТРАЦИИ
+        is_active BOOLEAN DEFAULT true,  
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
@@ -178,7 +178,7 @@ async function createOrUpdateTables(client) {
         preparation_time INTEGER,
         is_vegetarian BOOLEAN DEFAULT false,
         is_spicy BOOLEAN DEFAULT false,
-        is_available BOOLEAN DEFAULT true,  // ДОБАВЛЕНО ДЛЯ ТЕЛЕГРАМ БОТА
+        is_available BOOLEAN DEFAULT true, 
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
