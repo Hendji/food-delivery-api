@@ -1003,4 +1003,384 @@ async function startServer() {
   }
 }
 
+// ==================== НОВЫЕ ЭНДПОИНТЫ ДЛЯ АДМИНИСТРИРОВАНИЯ ====================
+
+// Создание нового блюда
+app.post('/admin/dishes', async (req, res) => {
+  try {
+    if (!validateAdminApiKey(req)) {
+      return res.status(401).json({ error: 'Неверный API ключ' });
+    }
+
+    const {
+      restaurant_id,
+      name,
+      description,
+      image_url,
+      price,
+      ingredients,
+      preparation_time,
+      is_vegetarian,
+      is_spicy
+    } = req.body;
+
+    // Валидация
+    if (!restaurant_id || !name || !price) {
+      return res.status(400).json({ 
+        error: 'Заполните обязательные поля: restaurant_id, name, price' 
+      });
+    }
+
+    const result = await pool.query(
+      `INSERT INTO dishes (
+        restaurant_id, name, description, image_url, price,
+        ingredients, preparation_time, is_vegetarian, is_spicy, is_available
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      RETURNING *`,
+      [
+        restaurant_id,
+        name,
+        description || '',
+        image_url || '',
+        price,
+        ingredients || [],
+        preparation_time || 30,
+        is_vegetarian || false,
+        is_spicy || false,
+        true  // По умолчанию доступно
+      ]
+    );
+
+    res.json({
+      success: true,
+      message: 'Блюдо успешно создано',
+      dish: result.rows[0]
+    });
+
+  } catch (error) {
+    console.error('Ошибка создания блюда:', error);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+// Редактирование блюда
+app.put('/admin/dishes/:id', async (req, res) => {
+  try {
+    if (!validateAdminApiKey(req)) {
+      return res.status(401).json({ error: 'Неверный API ключ' });
+    }
+
+    const dishId = req.params.id;
+    const updates = req.body;
+
+    // Получаем текущие данные блюда
+    const currentDish = await pool.query(
+      'SELECT * FROM dishes WHERE id = $1',
+      [dishId]
+    );
+
+    if (currentDish.rows.length === 0) {
+      return res.status(404).json({ error: 'Блюдо не найдено' });
+    }
+
+    const current = currentDish.rows[0];
+    
+    // Подготавливаем обновленные данные
+    const updatedData = {
+      name: updates.name || current.name,
+      description: updates.description !== undefined ? updates.description : current.description,
+      image_url: updates.image_url !== undefined ? updates.image_url : current.image_url,
+      price: updates.price || current.price,
+      ingredients: updates.ingredients || current.ingredients,
+      preparation_time: updates.preparation_time || current.preparation_time,
+      is_vegetarian: updates.is_vegetarian !== undefined ? updates.is_vegetarian : current.is_vegetarian,
+      is_spicy: updates.is_spicy !== undefined ? updates.is_spicy : current.is_spicy,
+      is_available: updates.is_available !== undefined ? updates.is_available : current.is_available
+    };
+
+    // Обновляем блюдо
+    const result = await pool.query(
+      `UPDATE dishes SET
+        name = $1, description = $2, image_url = $3, price = $4,
+        ingredients = $5, preparation_time = $6, is_vegetarian = $7,
+        is_spicy = $8, is_available = $9
+       WHERE id = $10
+       RETURNING *`,
+      [
+        updatedData.name,
+        updatedData.description,
+        updatedData.image_url,
+        updatedData.price,
+        updatedData.ingredients,
+        updatedData.preparation_time,
+        updatedData.is_vegetarian,
+        updatedData.is_spicy,
+        updatedData.is_available,
+        dishId
+      ]
+    );
+
+    res.json({
+      success: true,
+      message: 'Блюдо успешно обновлено',
+      dish: result.rows[0]
+    });
+
+  } catch (error) {
+    console.error('Ошибка обновления блюда:', error);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+// Удаление блюда
+app.delete('/admin/dishes/:id', async (req, res) => {
+  try {
+    if (!validateAdminApiKey(req)) {
+      return res.status(401).json({ error: 'Неверный API ключ' });
+    }
+
+    const dishId = req.params.id;
+
+    // Проверяем, есть ли блюдо в заказах
+    const orderCheck = await pool.query(
+      'SELECT COUNT(*) FROM order_items WHERE dish_id = $1',
+      [dishId]
+    );
+
+    if (parseInt(orderCheck.rows[0].count) > 0) {
+      // Вместо удаления делаем недоступным
+      await pool.query(
+        'UPDATE dishes SET is_available = false WHERE id = $1',
+        [dishId]
+      );
+      
+      return res.json({
+        success: true,
+        message: 'Блюдо используется в заказах. Сделано недоступным вместо удаления.',
+        soft_delete: true
+      });
+    }
+
+    // Удаляем блюдо
+    const result = await pool.query(
+      'DELETE FROM dishes WHERE id = $1 RETURNING id, name',
+      [dishId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Блюдо не найдено' });
+    }
+
+    res.json({
+      success: true,
+      message: 'Блюдо успешно удалено',
+      dish: result.rows[0]
+    });
+
+  } catch (error) {
+    console.error('Ошибка удаления блюда:', error);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+// Создание заказа из приложения
+app.post('/orders', async (req, res) => {
+  try {
+    const {
+      user_id,
+      restaurant_id,
+      items,
+      delivery_address,
+      payment_method,
+      restaurant_name,
+      restaurant_image
+    } = req.body;
+
+    // Валидация
+    if (!user_id || !restaurant_id || !items || !delivery_address) {
+      return res.status(400).json({
+        error: 'Заполните обязательные поля'
+      });
+    }
+
+    // Рассчитываем общую сумму
+    let totalAmount = 0;
+    for (const item of items) {
+      totalAmount += (item.price || 0) * (item.quantity || 1);
+    }
+
+    // Создаем заказ
+    const orderResult = await pool.query(
+      `INSERT INTO orders (
+        user_id, restaurant_id, restaurant_name, restaurant_image,
+        total_amount, status, delivery_address, payment_method
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      RETURNING *`,
+      [
+        user_id,
+        restaurant_id,
+        restaurant_name || 'Ресторан',
+        restaurant_image || '',
+        totalAmount,
+        'pending', // Статус по умолчанию
+        delivery_address,
+        payment_method || 'Картой онлайн'
+      ]
+    );
+
+    const order = orderResult.rows[0];
+
+    // Добавляем элементы заказа
+    for (const item of items) {
+      await pool.query(
+        `INSERT INTO order_items (
+          order_id, dish_id, dish_name, dish_price, quantity
+        ) VALUES ($1, $2, $3, $4, $5)`,
+        [
+          order.id,
+          item.dish_id,
+          item.dish_name,
+          item.price,
+          item.quantity || 1
+        ]
+      );
+    }
+
+    // Получаем полную информацию о заказе
+    const fullOrder = await pool.query(
+      `SELECT o.*, 
+       json_agg(
+         json_build_object(
+           'dish_id', oi.dish_id,
+           'dish_name', oi.dish_name,
+           'dish_price', oi.dish_price,
+           'quantity', oi.quantity
+         )
+       ) as items
+       FROM orders o
+       LEFT JOIN order_items oi ON o.id = oi.order_id
+       WHERE o.id = $1
+       GROUP BY o.id`,
+      [order.id]
+    );
+
+    // Здесь будет вызов вебхука для Telegram (добавим позже)
+    // await notifyTelegramAboutOrder(fullOrder.rows[0]);
+
+    res.json({
+      success: true,
+      message: 'Заказ успешно создан',
+      order: fullOrder.rows[0]
+    });
+
+  } catch (error) {
+    console.error('Ошибка создания заказа:', error);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+// Получение списка заказов (для админов)
+app.get('/admin/orders', async (req, res) => {
+  try {
+    if (!validateAdminApiKey(req)) {
+      return res.status(401).json({ error: 'Неверный API ключ' });
+    }
+
+    const { status, limit = 50 } = req.query;
+
+    let query = `
+      SELECT o.*, 
+      json_agg(
+        json_build_object(
+          'dish_id', oi.dish_id,
+          'dish_name', oi.dish_name,
+          'dish_price', oi.dish_price,
+          'quantity', oi.quantity
+        )
+      ) as items,
+      u.name as user_name,
+      u.phone as user_phone
+      FROM orders o
+      LEFT JOIN order_items oi ON o.id = oi.order_id
+      LEFT JOIN users u ON o.user_id = u.id
+    `;
+
+    const params = [];
+    if (status) {
+      query += ' WHERE o.status = $1';
+      params.push(status);
+    }
+
+    query += ` GROUP BY o.id, u.name, u.phone 
+               ORDER BY o.order_date DESC 
+               LIMIT ${limit}`;
+
+    const result = await pool.query(query, params);
+
+    res.json(result.rows);
+
+  } catch (error) {
+    console.error('Ошибка получения заказов:', error);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+// Обновление статуса заказа
+app.put('/admin/orders/:id/status', async (req, res) => {
+  try {
+    if (!validateAdminApiKey(req)) {
+      return res.status(401).json({ error: 'Неверный API ключ' });
+    }
+
+    const orderId = req.params.id;
+    const { status } = req.body;
+
+    const validStatuses = ['pending', 'confirmed', 'preparing', 'delivering', 'delivered', 'cancelled'];
+    
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({
+        error: `Неверный статус. Допустимые значения: ${validStatuses.join(', ')}`
+      });
+    }
+
+    const result = await pool.query(
+      `UPDATE orders SET status = $1 WHERE id = $2 RETURNING *`,
+      [status, orderId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Заказ не найден' });
+    }
+
+    // Здесь будет уведомление в Telegram об изменении статуса
+
+    res.json({
+      success: true,
+      message: `Статус заказа обновлен на "${status}"`,
+      order: result.rows[0]
+    });
+
+  } catch (error) {
+    console.error('Ошибка обновления статуса:', error);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+// Вебхук для уведомлений в Telegram
+app.post('/webhook/telegram/notify', async (req, res) => {
+  try {
+    const { chat_id, message } = req.body;
+    
+    // Здесь будет логика отправки в Telegram
+    // Пока просто логируем
+    console.log('📨 Telegram notification:', { chat_id, message });
+    
+    res.json({ success: true, sent: true });
+    
+  } catch (error) {
+    console.error('Webhook error:', error);
+    res.status(500).json({ error: 'Ошибка отправки' });
+  }
+});
+
 startServer();
