@@ -8,7 +8,12 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 8000;
 
-app.use(cors());
+app.use(cors({
+  origin: '*',
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Admin-API-Key', 'x-user-id']
+}));
 app.use(express.json());
 
 function log(message) {
@@ -23,31 +28,25 @@ let isDatabaseConnected = false;
 
 async function initializeDatabase() {
   try {
-
     const databaseUrl = process.env.DATABASE_URL || 
                        (process.env.PGHOST ? 
                          `postgresql://${process.env.PGUSER}:${process.env.PGPASSWORD}@${process.env.PGHOST}:${process.env.PGPORT || 5432}/${process.env.PGDATABASE}` : 
                          null);
 
     log(`🔍 Проверяем подключение к БД...`);
-    log(`   DATABASE_URL: ${process.env.DATABASE_URL ? 'присутствует' : 'отсутствует'}`);
-    log(`   PGHOST: ${process.env.PGHOST || 'не установлен'}`);
-    log(`   PGUSER: ${process.env.PGUSER || 'не установлен'}`);
     
     if (!databaseUrl) {
       log('⚠️ Не найдены данные для подключения к БД. Используем мок-режим.');
-      log('💡 Подсказка: Добавьте PostgreSQL в Railway или установите DATABASE_URL');
       return;
     }
 
     log('🔗 Пытаемся подключиться к PostgreSQL...');
-    
 
     pool = new Pool({
       connectionString: databaseUrl,
-      ssl: {
+      ssl: process.env.NODE_ENV === 'production' ? {
         rejectUnauthorized: false
-      },
+      } : false,
       max: 5,
       min: 1,
       idleTimeoutMillis: 30000,
@@ -76,19 +75,7 @@ async function initializeDatabase() {
     }, 30000);
 
   } catch (error) {
-    log(`❌ Критическая ошибка подключения к PostgreSQL:`);
-    log(`   Сообщение: ${error.message}`);
-    log(`   Код: ${error.code}`);
-    log(`   Детали: ${error.stack}`);
-    
-    if (error.code === 'ECONNREFUSED') {
-      log('💡 Подсказка: Проверьте, что PostgreSQL запущен в Railway');
-    } else if (error.code === '28P01') {
-      log('💡 Подсказка: Неверный логин/пароль для БД');
-    } else if (error.message.includes('does not exist')) {
-      log('💡 Подсказка: База данных не существует. Создайте ее в Railway');
-    }
-    
+    log(`❌ Критическая ошибка подключения к PostgreSQL: ${error.message}`);
     log('📝 Приложение будет работать в мок-режиме без базы данных');
     isDatabaseConnected = false;
   }
@@ -124,6 +111,7 @@ app.get('/debug/db', async (req, res) => {
 
 async function createOrUpdateTables(client) {
   try {
+    // Таблица пользователей
     await client.query(`
       CREATE TABLE IF NOT EXISTS users (
         id SERIAL PRIMARY KEY,
@@ -134,17 +122,13 @@ async function createOrUpdateTables(client) {
         avatar_url TEXT,
         role VARCHAR(20) DEFAULT 'user',
         telegram_chat_id BIGINT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        is_email_verified BOOLEAN DEFAULT false
       )
     `);
     log('✅ Таблица users создана/проверена');
 
-    try {
-      await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(20) DEFAULT \'user\'');
-      await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS telegram_chat_id BIGINT');
-    } catch (e) {
-    }
-
+    // Таблица ресторанов
     await client.query(`
       CREATE TABLE IF NOT EXISTS restaurants (
         id SERIAL PRIMARY KEY,
@@ -155,17 +139,13 @@ async function createOrUpdateTables(client) {
         delivery_time VARCHAR(50),
         delivery_price VARCHAR(50),
         categories TEXT[],
-        is_active BOOLEAN DEFAULT true,  
+        is_active BOOLEAN DEFAULT true,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
     log('✅ Таблица restaurants создана/проверена');
 
-    try {
-      await client.query('ALTER TABLE restaurants ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true');
-    } catch (e) {
-    }
-
+    // Таблица блюд
     await client.query(`
       CREATE TABLE IF NOT EXISTS dishes (
         id SERIAL PRIMARY KEY,
@@ -178,18 +158,13 @@ async function createOrUpdateTables(client) {
         preparation_time INTEGER,
         is_vegetarian BOOLEAN DEFAULT false,
         is_spicy BOOLEAN DEFAULT false,
-        is_available BOOLEAN DEFAULT true, 
+        is_available BOOLEAN DEFAULT true,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
     log('✅ Таблица dishes создана/проверена');
 
-    try {
-      await client.query('ALTER TABLE dishes ADD COLUMN IF NOT EXISTS is_available BOOLEAN DEFAULT true');
-    } catch (e) {
-    }
-
-    
+    // Таблица заказов
     await client.query(`
       CREATE TABLE IF NOT EXISTS orders (
         id SERIAL PRIMARY KEY,
@@ -201,11 +176,13 @@ async function createOrUpdateTables(client) {
         status VARCHAR(50) DEFAULT 'pending',
         delivery_address TEXT NOT NULL,
         payment_method VARCHAR(50),
-        order_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        order_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        notes TEXT
       )
     `);
     log('✅ Таблица orders создана/проверена');
 
+    // Таблица элементов заказа
     await client.query(`
       CREATE TABLE IF NOT EXISTS order_items (
         id SERIAL PRIMARY KEY,
@@ -213,10 +190,37 @@ async function createOrUpdateTables(client) {
         dish_id INTEGER REFERENCES dishes(id),
         dish_name VARCHAR(100),
         dish_price DECIMAL(10,2),
-        quantity INTEGER DEFAULT 1
+        quantity INTEGER DEFAULT 1,
+        dish_image TEXT
       )
     `);
     log('✅ Таблица order_items создана/проверена');
+
+    // Таблица токенов для восстановления пароля
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS password_reset_tokens (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id),
+        token VARCHAR(255) NOT NULL,
+        expires_at TIMESTAMP NOT NULL,
+        used BOOLEAN DEFAULT false,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    log('✅ Таблица password_reset_tokens создана/проверена');
+
+    // Таблица избранного
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS favorites (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id),
+        restaurant_id INTEGER REFERENCES restaurants(id),
+        dish_id INTEGER REFERENCES dishes(id),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(user_id, restaurant_id, dish_id)
+      )
+    `);
+    log('✅ Таблица favorites создана/проверена');
 
     await addTestDataIfNeeded(client);
 
@@ -233,25 +237,29 @@ async function addTestDataIfNeeded(client) {
     if (parseInt(restaurantsCount.rows[0].count) === 0) {
       log('🌱 Добавляем тестовые данные...');
       
+      // Добавляем ресторан "Наетый кабан"
       await client.query(`
         INSERT INTO restaurants (name, description, image_url, rating, delivery_time, delivery_price, categories, is_active) 
         VALUES 
-        ('Пицца Мания', 'Итальянская кухня, пицца, паста', 'https://images.unsplash.com/photo-1565299624946-b28f40a0ae38?w=400', 4.7, '25-35 мин', 'Бесплатно', ARRAY['Пицца', 'Итальянская', 'Паста'], true),
-        ('Бургер Кинг', 'Бургеры, картофель фри, напитки', 'https://images.unsplash.com/photo-1568901346375-23c9450c58cd?w=400', 4.5, '20-30 мин', '99 ₽', ARRAY['Бургеры', 'Фастфуд'], true)
+        ('Наетый кабан', 'Мясной ресторан с блюдами на огне. Стейки, ребрышки, бургеры и много мяса!', 'https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?w=800&auto=format&fit=crop', 4.9, '30-45 мин', 'Бесплатно от 1000 ₽', ARRAY['Мясо', 'Стейки', 'Бургеры', 'Ребрышки', 'Гриль'], true)
       `);
       
+      // Добавляем блюда для "Наетого кабана"
       await client.query(`
         INSERT INTO dishes (restaurant_id, name, description, image_url, price, ingredients, preparation_time, is_vegetarian, is_spicy, is_available) 
         VALUES 
-        (1, 'Пепперони', 'Пицца с колбасками пепперони и сыром моцарелла', 'https://images.unsplash.com/photo-1628840042765-356cda07504e?w=400', 699.00, ARRAY['Тесто', 'Томатный соус', 'Пепперони', 'Моцарелла'], 25, false, false, true),
-        (1, 'Маргарита', 'Классическая пицца с томатами и базиликом', 'https://images.unsplash.com/photo-1604068549290-dea0e4a305ca?w=400', 599.00, ARRAY['Тесто', 'Томатный соус', 'Моцарелла', 'Томаты', 'Базилик'], 20, true, false, true),
-        (2, 'Чизбургер', 'Классический бургер с сыром', 'https://images.unsplash.com/photo-1568901346375-23c9450c58cd?w=400', 299.00, ARRAY['Булочка', 'Говяжья котлета', 'Сыр', 'Лук', 'Кетчуп'], 15, false, false, true)
+        (1, 'Стейк Рибай', 'Сочный стейк из мраморной говядины, прожарка на выбор', 'https://images.unsplash.com/photo-1600891964092-4316c288032e?w=400', 1899.00, ARRAY['Говядина', 'Соль', 'Перец', 'Травы'], 25, false, false, true),
+        (1, 'Ребрышки BBQ', 'Свиные ребрышки в медово-сливочном соусе', 'https://images.unsplash.com/photo-1544025162-d76694265947?w=400', 1299.00, ARRAY['Свиные ребра', 'Соус BBQ', 'Мёд', 'Специи'], 30, false, true, true),
+        (1, 'Бургер «Кабан»', 'Бургер с говяжьей котлетой, беконом и сыром чеддер', 'https://images.unsplash.com/photo-1568901346375-23c9450c58cd?w=400', 799.00, ARRAY['Булочка', 'Говядина', 'Бекон', 'Сыр', 'Соус'], 20, false, false, true),
+        (1, 'Куриные крылышки', 'Хрустящие куриные крылышки с соусом на выбор', 'https://images.unsplash.com/photo-1567620832903-9fc6debc209f?w=400', 599.00, ARRAY['Куриные крылья', 'Соус', 'Специи'], 15, false, true, true),
+        (1, 'Картофель по-деревенски', 'Запеченный картофель с травами и чесноком', 'https://images.unsplash.com/photo-1573080496219-bb080dd4f877?w=400', 299.00, ARRAY['Картофель', 'Чеснок', 'Травы', 'Масло'], 15, true, false, true)
       `);
       
+      // Добавляем тестового пользователя
       const hashedPassword = await bcrypt.hash('password123', 10);
       await client.query(`
         INSERT INTO users (name, email, password, phone, role) 
-        VALUES ('Администратор', 'admin@example.com', $1, '+7 (999) 123-45-67', 'admin')
+        VALUES ('Тестовый Пользователь', 'test@example.com', $1, '+7 (999) 123-45-67', 'user')
         ON CONFLICT (email) DO NOTHING
       `, [hashedPassword]);
       
@@ -262,30 +270,20 @@ async function addTestDataIfNeeded(client) {
   }
 }
 
-
 function getUserIdFromToken(req) {
-  const authHeader = req.headers['authorization'];
-  
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    const userId = req.headers['x-user-id'];
-    if (userId && !isNaN(parseInt(userId))) {
-      return parseInt(userId);
-    }
-    
-    const oldToken = req.headers.authorization?.replace('Bearer ', '');
-    if (oldToken && oldToken.startsWith('token_')) {
-      const tokenParts = oldToken.split('_');
-      if (tokenParts.length > 1 && !isNaN(parseInt(tokenParts[1]))) {
-        return parseInt(tokenParts[1]);
-      }
-    }
-    
-    return null;
-  }
-  
-  const token = authHeader.split(' ')[1];
-  
   try {
+    const authHeader = req.headers['authorization'];
+    
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return null;
+    }
+    
+    const token = authHeader.split(' ')[1];
+    
+    if (!token) {
+      return null;
+    }
+    
     const decoded = jwt.verify(token, JWT_SECRET);
     return decoded.id;
   } catch (error) {
@@ -299,22 +297,20 @@ function validateAdminApiKey(req) {
   return apiKey === ADMIN_API_KEY;
 }
 
+// ==================== ОСНОВНЫЕ ЭНДПОИНТЫ ====================
 
 app.get('/', (req, res) => {
   res.json({
     message: '🚀 Food Delivery API работает!',
     status: 'ok',
     database: isDatabaseConnected ? 'connected' : 'mock-mode',
+    version: '1.0.0',
     endpoints: {
-      health: '/health',
-      register: '/register (POST)',
-      login: '/login (POST)',
-      user: '/users/me (GET)',
-      stats: '/users/me/stats (GET)',
-      orders: '/users/me/orders (GET)',
-      restaurants: '/restaurants (GET)',
-      menu: '/restaurants/:id/menu (GET)',
-      bot_toggle: '/bot/dish/:id/toggle (POST)'
+      auth: ['/register (POST)', '/login (POST)', '/verify-email (GET)', '/reset-password (POST)'],
+      user: ['/users/me (GET)', '/users/me/stats (GET)', '/users/me/orders (GET)'],
+      restaurants: ['/restaurants (GET)', '/restaurants/:id (GET)', '/restaurants/:id/menu (GET)'],
+      orders: ['/orders (POST)', '/orders/:id (GET)'],
+      admin: ['/admin/* (требует X-Admin-API-Key)']
     }
   });
 });
@@ -328,6 +324,7 @@ app.get('/health', (req, res) => {
   });
 });
 
+// Регистрация пользователя
 app.post('/register', async (req, res) => {
   try {
     const { name, email, password, phone } = req.body;
@@ -358,10 +355,10 @@ app.post('/register', async (req, res) => {
         const hashedPassword = await bcrypt.hash(password, 10);
 
         const newUser = await pool.query(
-          `INSERT INTO users (name, email, password, phone)
-           VALUES ($1, $2, $3, $4)
-           RETURNING id, name, email, phone, avatar_url, created_at`,
-          [name, email, hashedPassword, phone || null]
+          `INSERT INTO users (name, email, password, phone, is_email_verified)
+           VALUES ($1, $2, $3, $4, $5)
+           RETURNING id, name, email, phone, avatar_url, is_email_verified, created_at`,
+          [name, email, hashedPassword, phone || null, false]
         );
 
         const user = newUser.rows[0];
@@ -382,6 +379,7 @@ app.post('/register', async (req, res) => {
             email: user.email,
             phone: user.phone,
             avatarUrl: user.avatar_url,
+            isEmailVerified: user.is_email_verified,
             createdAt: user.created_at
           }
         });
@@ -403,6 +401,7 @@ app.post('/register', async (req, res) => {
   }
 });
 
+// Вход пользователя
 app.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -458,6 +457,7 @@ app.post('/login', async (req, res) => {
             phone: user.phone,
             avatarUrl: user.avatar_url,
             role: user.role,
+            isEmailVerified: user.is_email_verified,
             createdAt: user.created_at
           }
         });
@@ -496,6 +496,7 @@ function sendMockRegistration(res, name, email, phone) {
       email,
       phone: phone || null,
       avatarUrl: null,
+      isEmailVerified: false,
       createdAt: new Date().toISOString()
     }
   });
@@ -519,174 +520,13 @@ function sendMockLogin(res, email) {
       phone: '+7 (999) 123-45-67',
       avatarUrl: null,
       role: 'user',
+      isEmailVerified: true,
       createdAt: new Date().toISOString()
     }
   });
 }
 
-app.get('/restaurants', async (req, res) => {
-  try {
-    log('🍽️ Запрос списка ресторанов');
-
-    if (isDatabaseConnected && pool) {
-      const result = await pool.query(
-        `SELECT id, name, description, image_url, rating,
-                delivery_time, delivery_price, categories
-         FROM restaurants 
-         WHERE is_active = true
-         ORDER BY rating DESC, name`
-      );
-      
-      res.json(result.rows);
-      
-    } else {
-      res.json([
-        {
-          id: 1,
-          name: 'Пицца Мания',
-          description: 'Итальянская кухня, пицца, паста',
-          image_url: 'https://images.unsplash.com/photo-1565299624946-b28f40a0ae38?w=400',
-          rating: 4.7,
-          delivery_time: '25-35 мин',
-          delivery_price: 'Бесплатно',
-          categories: ['Пицца', 'Итальянская', 'Паста']
-        }
-      ]);
-    }
-
-  } catch (error) {
-    log(`❌ Ошибка получения ресторанов: ${error.message}`);
-    res.status(500).json({ error: 'Ошибка сервера' });
-  }
-});
-
-app.get('/restaurants/:id/menu', async (req, res) => {
-  try {
-    const restaurantId = req.params.id;
-    log(`📋 Запрос меню для ресторана ${restaurantId}`);
-
-    if (isDatabaseConnected && pool) {
-      const result = await pool.query(
-        `SELECT id, name, description, image_url, price,
-                ingredients, preparation_time, 
-                is_vegetarian, is_spicy
-         FROM dishes 
-         WHERE restaurant_id = $1 AND is_available = true
-         ORDER BY name`,
-        [restaurantId]
-      );
-      
-      res.json(result.rows);
-      
-    } else {
-      res.json([
-        {
-          id: 1,
-          name: 'Пепперони',
-          description: 'Пицца с колбасками пепперони и сыром моцарелла',
-          image_url: 'https://images.unsplash.com/photo-1628840042765-356cda07504e?w=400',
-          price: 699.00,
-          ingredients: ['Тесто', 'Томатный соус', 'Пепперони', 'Моцарелла'],
-          preparation_time: 25,
-          is_vegetarian: false,
-          is_spicy: false
-        }
-      ]);
-    }
-
-  } catch (error) {
-    log(`❌ Ошибка получения меню: ${error.message}`);
-    res.status(500).json({ error: 'Ошибка сервера' });
-  }
-});
-
-app.post('/bot/dish/:id/toggle', async (req, res) => {
-  try {
-    if (!validateAdminApiKey(req)) {
-      return res.status(401).json({ 
-        error: 'Неверный API ключ',
-        hint: 'Установите правильный ADMIN_API_KEY'
-      });
-    }
-
-    if (!isDatabaseConnected || !pool) {
-      return res.status(503).json({ 
-        error: 'База данных недоступна',
-        mode: 'mock'
-      });
-    }
-
-    const dishId = req.params.id;
-    log(`🔄 Переключение доступности блюда ${dishId}`);
-
-    const result = await pool.query(
-      `UPDATE dishes 
-       SET is_available = NOT is_available
-       WHERE id = $1
-       RETURNING id, name, is_available`,
-      [dishId]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ 
-        error: 'Блюдо не найдено',
-        dish_id: dishId
-      });
-    }
-
-    const dish = result.rows[0];
-    const status = dish.is_available ? 'доступно' : 'недоступно';
-
-    res.json({
-      success: true,
-      message: `Блюдо "${dish.name}" теперь ${status}`,
-      dish: dish,
-      timestamp: new Date().toISOString()
-    });
-
-  } catch (error) {
-    log(`❌ Ошибка переключения блюда: ${error.message}`);
-    res.status(500).json({ 
-      error: 'Ошибка сервера',
-      details: error.message
-    });
-  }
-});
-
-app.get('/bot/dish/:id', async (req, res) => {
-  try {
-    if (!validateAdminApiKey(req)) {
-      return res.status(401).json({ error: 'Неверный API ключ' });
-    }
-
-    if (!isDatabaseConnected || !pool) {
-      return res.status(503).json({ error: 'База данных недоступна' });
-    }
-
-    const dishId = req.params.id;
-    const result = await pool.query(
-      `SELECT d.*, r.name as restaurant_name
-       FROM dishes d
-       JOIN restaurants r ON d.restaurant_id = r.id
-       WHERE d.id = $1`,
-      [dishId]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Блюдо не найдено' });
-    }
-
-    res.json({
-      success: true,
-      dish: result.rows[0]
-    });
-
-  } catch (error) {
-    log(`❌ Ошибка получения блюда: ${error.message}`);
-    res.status(500).json({ error: 'Ошибка сервера' });
-  }
-});
-
+// Получение информации о текущем пользователе
 app.get('/users/me', async (req, res) => {
   try {
     const userId = getUserIdFromToken(req);
@@ -700,7 +540,7 @@ app.get('/users/me', async (req, res) => {
     if (isDatabaseConnected && pool) {
       try {
         const userResult = await pool.query(
-          'SELECT id, name, email, phone, avatar_url, created_at FROM users WHERE id = $1',
+          'SELECT id, name, email, phone, avatar_url, role, is_email_verified, created_at FROM users WHERE id = $1',
           [userId]
         );
 
@@ -718,6 +558,8 @@ app.get('/users/me', async (req, res) => {
           email: user.email,
           phone: user.phone,
           avatarUrl: user.avatar_url,
+          role: user.role,
+          isEmailVerified: user.is_email_verified,
           createdAt: user.created_at
         });
 
@@ -734,6 +576,8 @@ app.get('/users/me', async (req, res) => {
         email: 'ivan@example.com',
         phone: '+7 (999) 123-45-67',
         avatarUrl: null,
+        role: 'user',
+        isEmailVerified: true,
         createdAt: new Date().toISOString()
       });
     }
@@ -744,6 +588,7 @@ app.get('/users/me', async (req, res) => {
   }
 });
 
+// Получение статистики пользователя
 app.get('/users/me/stats', async (req, res) => {
   try {
     const userId = getUserIdFromToken(req);
@@ -800,7 +645,7 @@ app.get('/users/me/stats', async (req, res) => {
         
         const favoriteRestaurant = favoriteRestaurantResult.rows.length > 0 
           ? favoriteRestaurantResult.rows[0].restaurant_name 
-          : null;
+          : 'Нет данных';
 
         res.json({
           total_orders: totalOrders,
@@ -825,7 +670,7 @@ app.get('/users/me/stats', async (req, res) => {
           pending_orders: 1,
           total_spent: 4500,
           average_order_value: 900,
-          favorite_restaurant: 'Пицца Мания'
+          favorite_restaurant: 'Наетый кабан'
         });
       } else {
         res.json({
@@ -834,7 +679,7 @@ app.get('/users/me/stats', async (req, res) => {
           pending_orders: 0,
           total_spent: 0,
           average_order_value: 0,
-          favorite_restaurant: null
+          favorite_restaurant: 'Нет данных'
         });
       }
     }
@@ -845,6 +690,7 @@ app.get('/users/me/stats', async (req, res) => {
   }
 });
 
+// Получение истории заказов пользователя
 app.get('/users/me/orders', async (req, res) => {
   try {
     const userId = getUserIdFromToken(req);
@@ -861,155 +707,665 @@ app.get('/users/me/orders', async (req, res) => {
       try {
         const ordersResult = await pool.query(
           `SELECT o.*, 
-           json_agg(
-             json_build_object(
-               'dish_id', oi.dish_id,
-               'dish_name', oi.dish_name,
-               'dish_price', oi.dish_price,
-               'quantity', oi.quantity
-             )
+           COALESCE(
+             json_agg(
+               json_build_object(
+                 'dish_id', oi.dish_id,
+                 'dish_name', oi.dish_name,
+                 'dish_description', d.description,
+                 'dish_image', d.image_url,
+                 'dish_price', oi.dish_price,
+                 'quantity', oi.quantity
+               )
+             ) FILTER (WHERE oi.id IS NOT NULL),
+             '[]'
            ) as items
            FROM orders o
            LEFT JOIN order_items oi ON o.id = oi.order_id
+           LEFT JOIN dishes d ON oi.dish_id = d.id
            WHERE o.user_id = $1
            GROUP BY o.id
-           ORDER BY o.order_date DESC`,
+           ORDER BY o.order_date DESC
+           LIMIT 50`,
           [userId]
         );
 
         const orders = ordersResult.rows.map(order => ({
           id: order.id.toString(),
-          restaurant_name: order.restaurant_name,
-          restaurant_image: order.restaurant_image,
+          restaurant_name: order.restaurant_name || 'Ресторан',
+          restaurant_image: order.restaurant_image || 'https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?w=400',
           order_date: order.order_date.toISOString(),
           total_amount: parseFloat(order.total_amount),
-          status: order.status,
-          delivery_address: order.delivery_address,
-          payment_method: order.payment_method,
+          status: order.status || 'pending',
+          delivery_address: order.delivery_address || 'Адрес не указан',
+          payment_method: order.payment_method || 'Не указан',
           items: order.items || []
         }));
 
-        res.json({ orders });
+        res.json({ success: true, orders });
 
       } catch (dbError) {
         log(`❌ Ошибка базы при получении заказов: ${dbError.message}`);
-        
-        res.json({ orders: [] });
+        return res.json({ 
+          success: true, 
+          orders: [] 
+        });
       }
     } else {
       if (userId === 1) {
         const mockOrders = [
           {
             id: '100',
-            restaurant_name: 'Пицца Мания',
-            restaurant_image: 'https://images.unsplash.com/photo-1565299624946-b28f40a0ae38?w=400',
+            restaurant_name: 'Наетый кабан',
+            restaurant_image: 'https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?w=400',
             order_date: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
-            total_amount: 1200.0,
+            total_amount: 2598.00,
             status: 'delivered',
             delivery_address: 'ул. Ленина, д. 10, кв. 5',
+            payment_method: 'Картой онлайн',
             items: [
               {
-                dish_id: 'p1',
-                dish_name: 'Пепперони',
-                dish_description: 'Пицца с колбасками пепперони и сыром моцарелла',
-                dish_price: 600.0,
-                dish_image: 'https://images.unsplash.com/photo-1628840042765-356cda07504e?w=400',
-                ingredients: ['Тесто', 'Томатный соус', 'Пепперони', 'Моцарелла'],
-                preparation_time: 25,
-                quantity: 2
-              }
-            ],
-            payment_method: 'Картой онлайн'
-          },
-          {
-            id: '101',
-            restaurant_name: 'Бургер Кинг',
-            restaurant_image: 'https://images.unsplash.com/photo-1568901346375-23c9450c58cd?w=400',
-            order_date: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
-            total_amount: 749.0,
-            status: 'delivered',
-            delivery_address: 'ул. Ленина, д. 10, кв. 5',
-            items: [
-              {
-                dish_id: 'b1',
-                dish_name: 'Чизбургер',
-                dish_description: 'Классический бургер с сыром',
-                dish_price: 299.0,
-                dish_image: 'https://images.unsplash.com/photo-1568901346375-23c9450c58cd?w=400',
-                ingredients: ['Булочка', 'Говяжья котлета', 'Сыр', 'Лук', 'Кетчуп'],
-                preparation_time: 15,
+                dish_id: '1',
+                dish_name: 'Стейк Рибай',
+                dish_description: 'Сочный стейк из мраморной говядины',
+                dish_image: 'https://images.unsplash.com/photo-1600891964092-4316c288032e?w=400',
+                dish_price: 1899.00,
                 quantity: 1
               },
               {
-                dish_id: 'b3',
-                dish_name: 'Картофель фри',
-                dish_description: 'Хрустящий картофель фри',
-                dish_price: 149.0,
+                dish_id: '5',
+                dish_name: 'Картофель по-деревенски',
+                dish_description: 'Запеченный картофель с травами и чесноком',
                 dish_image: 'https://images.unsplash.com/photo-1573080496219-bb080dd4f877?w=400',
-                ingredients: ['Картофель', 'Растительное масло', 'Соль'],
-                preparation_time: 10,
-                is_vegetarian: true,
-                quantity: 3
+                dish_price: 299.00,
+                quantity: 1
               }
-            ],
-            payment_method: 'Наличными'
+            ]
           }
         ];
         
-        res.json({ orders: mockOrders });
+        res.json({ success: true, orders: mockOrders });
       } else {
-        res.json({ orders: [] });
+        res.json({ success: true, orders: [] });
       }
     }
 
   } catch (error) {
     log(`❌ Ошибка получения заказов: ${error.message}`);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Ошибка сервера' 
+    });
+  }
+});
+
+// Получение списка ресторанов
+app.get('/restaurants', async (req, res) => {
+  try {
+    log('🍽️ Запрос списка ресторанов');
+
+    if (isDatabaseConnected && pool) {
+      const result = await pool.query(
+        `SELECT id, name, description, image_url, rating,
+                delivery_time, delivery_price, categories
+         FROM restaurants 
+         WHERE is_active = true
+         ORDER BY rating DESC, name`
+      );
+      
+      res.json(result.rows);
+      
+    } else {
+      res.json([
+        {
+          id: 1,
+          name: 'Наетый кабан',
+          description: 'Мясной ресторан с блюдами на огне. Стейки, ребрышки, бургеры и много мяса!',
+          image_url: 'https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?w=800&auto=format&fit=crop',
+          rating: 4.9,
+          delivery_time: '30-45 мин',
+          delivery_price: 'Бесплатно от 1000 ₽',
+          categories: ['Мясо', 'Стейки', 'Бургеры', 'Ребрышки', 'Гриль']
+        }
+      ]);
+    }
+
+  } catch (error) {
+    log(`❌ Ошибка получения ресторанов: ${error.message}`);
     res.status(500).json({ error: 'Ошибка сервера' });
   }
 });
 
-
-async function startServer() {
+// Получение меню ресторана
+app.get('/restaurants/:id/menu', async (req, res) => {
   try {
-    await initializeDatabase();
+    const restaurantId = req.params.id;
+    log(`📋 Запрос меню для ресторана ${restaurantId}`);
 
-    app.listen(PORT, () => {
-      log(`\n🚀 Сервер запущен!`);
-      log(`📡 Порт: ${PORT}`);
-      log(`🌐 Режим базы: ${isDatabaseConnected ? '✅ Подключена' : '⚠️ Мок-режим'}`);
-      log(`🔧 NODE_ENV: ${process.env.NODE_ENV || 'development'}`);
-      log(`🔐 JWT_SECRET: ${JWT_SECRET ? 'Установлен' : 'Используется дефолтный'}`);
-      log(`🔑 ADMIN_API_KEY: ${ADMIN_API_KEY ? 'Установлен' : 'Используется дефолтный'}`);
-
-      if (process.env.RAILWAY_PUBLIC_DOMAIN) {
-        log(`🌍 Public URL: https://${process.env.RAILWAY_PUBLIC_DOMAIN}`);
-      } else if (process.env.RAILWAY_STATIC_URL) {
-        log(`🌍 Railway URL: ${process.env.RAILWAY_STATIC_URL}`);
-      } else if (process.env.NODE_ENV === 'production') {
-        log(`🌍 Production mode`);
-      } else {
-        log(`🌍 Local URL: http://localhost:${PORT}`);
-      }
+    if (isDatabaseConnected && pool) {
+      const result = await pool.query(
+        `SELECT id, name, description, image_url, price,
+                ingredients, preparation_time, 
+                is_vegetarian, is_spicy
+         FROM dishes 
+         WHERE restaurant_id = $1 AND is_available = true
+         ORDER BY name`,
+        [restaurantId]
+      );
       
-      log(`\n🤖 Эндпоинты для Telegram бота:`);
-      log(`   🔄 Переключить блюдо: POST /bot/dish/:id/toggle`);
-      log(`   📋 Информация о блюде: GET /bot/dish/:id`);
-      log(`   ⚠️ Заголовок: X-Admin-API-Key: ${ADMIN_API_KEY}`);
+      res.json(result.rows);
+      
+    } else {
+      res.json([
+        {
+          id: 1,
+          name: 'Стейк Рибай',
+          description: 'Сочный стейк из мраморной говядины, прожарка на выбор',
+          image_url: 'https://images.unsplash.com/photo-1600891964092-4316c288032e?w=400',
+          price: 1899.00,
+          ingredients: ['Говядина', 'Соль', 'Перец', 'Травы'],
+          preparation_time: 25,
+          is_vegetarian: false,
+          is_spicy: false
+        },
+        {
+          id: 2,
+          name: 'Ребрышки BBQ',
+          description: 'Свиные ребрышки в медово-сливочном соусе',
+          image_url: 'https://images.unsplash.com/photo-1544025162-d76694265947?w=400',
+          price: 1299.00,
+          ingredients: ['Свиные ребра', 'Соус BBQ', 'Мёд', 'Специи'],
+          preparation_time: 30,
+          is_vegetarian: false,
+          is_spicy: true
+        }
+      ]);
+    }
+
+  } catch (error) {
+    log(`❌ Ошибка получения меню: ${error.message}`);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+// Создание заказа
+app.post('/orders', async (req, res) => {
+  try {
+    const userId = getUserIdFromToken(req);
+    
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Требуется авторизация'
+      });
+    }
+
+    const {
+      restaurant_id,
+      items,
+      delivery_address,
+      payment_method,
+      restaurant_name,
+      restaurant_image,
+      notes
+    } = req.body;
+
+    log(`🛒 Создание заказа для пользователя ${userId}`);
+
+    // Валидация
+    if (!restaurant_id || !items || !delivery_address) {
+      return res.status(400).json({
+        success: false,
+        error: 'Заполните обязательные поля: restaurant_id, items, delivery_address'
+      });
+    }
+
+    if (isDatabaseConnected && pool) {
+      try {
+        // Рассчитываем общую сумму
+        let totalAmount = 0;
+        const orderItems = [];
+        
+        for (const item of items) {
+          const price = parseFloat(item.price) || 0;
+          const quantity = parseInt(item.quantity) || 1;
+          totalAmount += price * quantity;
+          
+          orderItems.push({
+            dish_id: item.dish_id,
+            dish_name: item.dish_name,
+            dish_price: price,
+            quantity: quantity,
+            dish_image: item.dish_image
+          });
+        }
+
+        // Создаем заказ
+        const orderResult = await pool.query(
+          `INSERT INTO orders (
+            user_id, restaurant_id, restaurant_name, restaurant_image,
+            total_amount, status, delivery_address, payment_method, notes
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          RETURNING *`,
+          [
+            userId,
+            restaurant_id,
+            restaurant_name || 'Ресторан',
+            restaurant_image || '',
+            totalAmount,
+            'pending',
+            delivery_address,
+            payment_method || 'Картой онлайн',
+            notes || null
+          ]
+        );
+
+        const order = orderResult.rows[0];
+
+        // Добавляем элементы заказа
+        for (const item of orderItems) {
+          await pool.query(
+            `INSERT INTO order_items (
+              order_id, dish_id, dish_name, dish_price, quantity, dish_image
+            ) VALUES ($1, $2, $3, $4, $5, $6)`,
+            [
+              order.id,
+              item.dish_id,
+              item.dish_name,
+              item.dish_price,
+              item.quantity,
+              item.dish_image
+            ]
+          );
+        }
+
+        // Получаем полную информацию о заказе
+        const fullOrderResult = await pool.query(
+          `SELECT o.*, 
+           COALESCE(
+             json_agg(
+               json_build_object(
+                 'dish_id', oi.dish_id,
+                 'dish_name', oi.dish_name,
+                 'dish_price', oi.dish_price,
+                 'quantity', oi.quantity,
+                 'dish_image', oi.dish_image
+               )
+             ) FILTER (WHERE oi.id IS NOT NULL),
+             '[]'
+           ) as items
+           FROM orders o
+           LEFT JOIN order_items oi ON o.id = oi.order_id
+           WHERE o.id = $1
+           GROUP BY o.id`,
+          [order.id]
+        );
+
+        const fullOrder = fullOrderResult.rows[0];
+
+        res.json({
+          success: true,
+          message: 'Заказ успешно создан',
+          order: {
+            id: fullOrder.id.toString(),
+            restaurant_name: fullOrder.restaurant_name,
+            restaurant_image: fullOrder.restaurant_image,
+            order_date: fullOrder.order_date.toISOString(),
+            total_amount: parseFloat(fullOrder.total_amount),
+            status: fullOrder.status,
+            delivery_address: fullOrder.delivery_address,
+            payment_method: fullOrder.payment_method,
+            items: fullOrder.items || []
+          }
+        });
+
+      } catch (dbError) {
+        log(`❌ Ошибка базы при создании заказа: ${dbError.message}`);
+        res.status(500).json({
+          success: false,
+          error: 'Ошибка сервера при создании заказа'
+        });
+      }
+    } else {
+      // Мок-режим
+      const mockOrder = {
+        id: Date.now().toString(),
+        restaurant_name: restaurant_name || 'Наетый кабан',
+        restaurant_image: restaurant_image || 'https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?w=400',
+        order_date: new Date().toISOString(),
+        total_amount: items.reduce((sum, item) => sum + (item.price || 0) * (item.quantity || 1), 0),
+        status: 'pending',
+        delivery_address: delivery_address,
+        payment_method: payment_method || 'Картой онлайн',
+        items: items.map(item => ({
+          dish_id: item.dish_id,
+          dish_name: item.dish_name,
+          dish_price: item.price || 0,
+          quantity: item.quantity || 1,
+          dish_image: item.dish_image
+        }))
+      };
+
+      res.json({
+        success: true,
+        message: 'Заказ создан (тестовый режим)',
+        order: mockOrder
+      });
+    }
+
+  } catch (error) {
+    log(`❌ Ошибка создания заказа: ${error.message}`);
+    res.status(500).json({
+      success: false,
+      error: 'Ошибка сервера'
+    });
+  }
+});
+
+// Подтверждение email
+app.get('/verify-email', async (req, res) => {
+  try {
+    const { token } = req.query;
+    
+    if (!token) {
+      return res.status(400).json({
+        success: false,
+        error: 'Токен не предоставлен'
+      });
+    }
+
+    log(`📧 Подтверждение email с токеном: ${token}`);
+
+    // В реальном приложении здесь была бы проверка токена
+    // и обновление статуса в базе данных
+    
+    res.json({
+      success: true,
+      message: 'Email успешно подтвержден'
     });
 
   } catch (error) {
-    log(`❌ Критическая ошибка запуска: ${error.message}`);
-    process.exit(1);
+    log(`❌ Ошибка подтверждения email: ${error.message}`);
+    res.status(500).json({
+      success: false,
+      error: 'Ошибка сервера'
+    });
   }
-}
+});
 
-// ==================== НОВЫЕ ЭНДПОИНТЫ ДЛЯ АДМИНИСТРИРОВАНИЯ ====================
+// Запрос на сброс пароля
+app.post('/forgot-password', async (req, res) => {
+  try {
+    const { email } = req.body;
+    
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        error: 'Введите email'
+      });
+    }
+
+    log(`🔑 Запрос на сброс пароля для: ${email}`);
+
+    // В реальном приложении здесь была бы отправка email с токеном
+    
+    res.json({
+      success: true,
+      message: 'Инструкции по восстановлению пароля отправлены на email'
+    });
+
+  } catch (error) {
+    log(`❌ Ошибка запроса сброса пароля: ${error.message}`);
+    res.status(500).json({
+      success: false,
+      error: 'Ошибка сервера'
+    });
+  }
+});
+
+// Сброс пароля
+app.post('/reset-password', async (req, res) => {
+  try {
+    const { token, password } = req.body;
+    
+    if (!token || !password) {
+      return res.status(400).json({
+        success: false,
+        error: 'Токен и новый пароль обязательны'
+      });
+    }
+
+    if (password.length < 6) {
+      return res.status(400).json({
+        success: false,
+        error: 'Пароль должен содержать минимум 6 символов'
+      });
+    }
+
+    log(`🔑 Сброс пароля с токеном: ${token}`);
+
+    // В реальном приложении здесь была бы проверка токена
+    // и обновление пароля в базе данных
+    
+    res.json({
+      success: true,
+      message: 'Пароль успешно изменен'
+    });
+
+  } catch (error) {
+    log(`❌ Ошибка сброса пароля: ${error.message}`);
+    res.status(500).json({
+      success: false,
+      error: 'Ошибка сервера'
+    });
+  }
+});
+
+// Изменение пароля (требуется авторизация)
+app.post('/change-password', async (req, res) => {
+  try {
+    const userId = getUserIdFromToken(req);
+    
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Требуется авторизация'
+      });
+    }
+
+    const { currentPassword, newPassword } = req.body;
+    
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({
+        success: false,
+        error: 'Введите текущий и новый пароль'
+      });
+    }
+
+    if (newPassword.length < 6) {
+      return res.status(400).json({
+        success: false,
+        error: 'Новый пароль должен содержать минимум 6 символов'
+      });
+    }
+
+    log(`🔑 Изменение пароля для пользователя ${userId}`);
+
+    if (isDatabaseConnected && pool) {
+      try {
+        // Получаем текущий пароль пользователя
+        const userResult = await pool.query(
+          'SELECT password FROM users WHERE id = $1',
+          [userId]
+        );
+
+        if (userResult.rows.length === 0) {
+          return res.status(404).json({
+            success: false,
+            error: 'Пользователь не найден'
+          });
+        }
+
+        const user = userResult.rows[0];
+        
+        // Проверяем текущий пароль
+        const validPassword = await bcrypt.compare(currentPassword, user.password);
+        
+        if (!validPassword) {
+          return res.status(401).json({
+            success: false,
+            error: 'Неверный текущий пароль'
+          });
+        }
+
+        // Хэшируем новый пароль
+        const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+        // Обновляем пароль
+        await pool.query(
+          'UPDATE users SET password = $1 WHERE id = $2',
+          [hashedPassword, userId]
+        );
+
+        res.json({
+          success: true,
+          message: 'Пароль успешно изменен'
+        });
+
+      } catch (dbError) {
+        log(`❌ Ошибка базы при изменении пароля: ${dbError.message}`);
+        res.status(500).json({
+          success: false,
+          error: 'Ошибка сервера'
+        });
+      }
+    } else {
+      res.json({
+        success: true,
+        message: 'Пароль изменен (тестовый режим)'
+      });
+    }
+
+  } catch (error) {
+    log(`❌ Ошибка изменения пароля: ${error.message}`);
+    res.status(500).json({
+      success: false,
+      error: 'Ошибка сервера'
+    });
+  }
+});
+
+// ==================== АДМИН ЭНДПОИНТЫ ====================
+
+// Переключение доступности блюда (для Telegram бота)
+app.post('/bot/dish/:id/toggle', async (req, res) => {
+  try {
+    if (!validateAdminApiKey(req)) {
+      return res.status(401).json({ 
+        success: false,
+        error: 'Неверный API ключ'
+      });
+    }
+
+    if (!isDatabaseConnected || !pool) {
+      return res.status(503).json({ 
+        success: false,
+        error: 'База данных недоступна',
+        mode: 'mock'
+      });
+    }
+
+    const dishId = req.params.id;
+    log(`🔄 Переключение доступности блюда ${dishId}`);
+
+    const result = await pool.query(
+      `UPDATE dishes 
+       SET is_available = NOT is_available
+       WHERE id = $1
+       RETURNING id, name, is_available`,
+      [dishId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ 
+        success: false,
+        error: 'Блюдо не найдено'
+      });
+    }
+
+    const dish = result.rows[0];
+    const status = dish.is_available ? 'доступно' : 'недоступно';
+
+    res.json({
+      success: true,
+      message: `Блюдо "${dish.name}" теперь ${status}`,
+      dish: dish
+    });
+
+  } catch (error) {
+    log(`❌ Ошибка переключения блюда: ${error.message}`);
+    res.status(500).json({ 
+      success: false,
+      error: 'Ошибка сервера'
+    });
+  }
+});
+
+// Получение информации о блюде (для админов)
+app.get('/bot/dish/:id', async (req, res) => {
+  try {
+    if (!validateAdminApiKey(req)) {
+      return res.status(401).json({ 
+        success: false,
+        error: 'Неверный API ключ' 
+      });
+    }
+
+    if (!isDatabaseConnected || !pool) {
+      return res.status(503).json({ 
+        success: false,
+        error: 'База данных недоступна' 
+      });
+    }
+
+    const dishId = req.params.id;
+    const result = await pool.query(
+      `SELECT d.*, r.name as restaurant_name
+       FROM dishes d
+       JOIN restaurants r ON d.restaurant_id = r.id
+       WHERE d.id = $1`,
+      [dishId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ 
+        success: false,
+        error: 'Блюдо не найдено' 
+      });
+    }
+
+    res.json({
+      success: true,
+      dish: result.rows[0]
+    });
+
+  } catch (error) {
+    log(`❌ Ошибка получения блюда: ${error.message}`);
+    res.status(500).json({ 
+      success: false,
+      error: 'Ошибка сервера' 
+    });
+  }
+});
 
 // Создание нового блюда
 app.post('/admin/dishes', async (req, res) => {
   try {
     if (!validateAdminApiKey(req)) {
-      return res.status(401).json({ error: 'Неверный API ключ' });
+      return res.status(401).json({ 
+        success: false,
+        error: 'Неверный API ключ' 
+      });
     }
 
     const {
@@ -1027,6 +1383,7 @@ app.post('/admin/dishes', async (req, res) => {
     // Валидация
     if (!restaurant_id || !name || !price) {
       return res.status(400).json({ 
+        success: false,
         error: 'Заполните обязательные поля: restaurant_id, name, price' 
       });
     }
@@ -1047,7 +1404,7 @@ app.post('/admin/dishes', async (req, res) => {
         preparation_time || 30,
         is_vegetarian || false,
         is_spicy || false,
-        true  // По умолчанию доступно
+        true
       ]
     );
 
@@ -1058,270 +1415,11 @@ app.post('/admin/dishes', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Ошибка создания блюда:', error);
-    res.status(500).json({ error: 'Ошибка сервера' });
-  }
-});
-
-// Редактирование блюда
-app.put('/admin/dishes/:id', async (req, res) => {
-  try {
-    if (!validateAdminApiKey(req)) {
-      return res.status(401).json({ error: 'Неверный API ключ' });
-    }
-
-    const dishId = req.params.id;
-    const updates = req.body;
-
-    // Получаем текущие данные блюда
-    const currentDish = await pool.query(
-      'SELECT * FROM dishes WHERE id = $1',
-      [dishId]
-    );
-
-    if (currentDish.rows.length === 0) {
-      return res.status(404).json({ error: 'Блюдо не найдено' });
-    }
-
-    const current = currentDish.rows[0];
-    
-    // Подготавливаем обновленные данные
-    const updatedData = {
-      name: updates.name || current.name,
-      description: updates.description !== undefined ? updates.description : current.description,
-      image_url: updates.image_url !== undefined ? updates.image_url : current.image_url,
-      price: updates.price || current.price,
-      ingredients: updates.ingredients || current.ingredients,
-      preparation_time: updates.preparation_time || current.preparation_time,
-      is_vegetarian: updates.is_vegetarian !== undefined ? updates.is_vegetarian : current.is_vegetarian,
-      is_spicy: updates.is_spicy !== undefined ? updates.is_spicy : current.is_spicy,
-      is_available: updates.is_available !== undefined ? updates.is_available : current.is_available
-    };
-
-    // Обновляем блюдо
-    const result = await pool.query(
-      `UPDATE dishes SET
-        name = $1, description = $2, image_url = $3, price = $4,
-        ingredients = $5, preparation_time = $6, is_vegetarian = $7,
-        is_spicy = $8, is_available = $9
-       WHERE id = $10
-       RETURNING *`,
-      [
-        updatedData.name,
-        updatedData.description,
-        updatedData.image_url,
-        updatedData.price,
-        updatedData.ingredients,
-        updatedData.preparation_time,
-        updatedData.is_vegetarian,
-        updatedData.is_spicy,
-        updatedData.is_available,
-        dishId
-      ]
-    );
-
-    res.json({
-      success: true,
-      message: 'Блюдо успешно обновлено',
-      dish: result.rows[0]
+    log(`❌ Ошибка создания блюда: ${error.message}`);
+    res.status(500).json({ 
+      success: false,
+      error: 'Ошибка сервера' 
     });
-
-  } catch (error) {
-    console.error('Ошибка обновления блюда:', error);
-    res.status(500).json({ error: 'Ошибка сервера' });
-  }
-});
-
-// Удаление блюда
-app.delete('/admin/dishes/:id', async (req, res) => {
-  try {
-    if (!validateAdminApiKey(req)) {
-      return res.status(401).json({ error: 'Неверный API ключ' });
-    }
-
-    const dishId = req.params.id;
-
-    // Проверяем, есть ли блюдо в заказах
-    const orderCheck = await pool.query(
-      'SELECT COUNT(*) FROM order_items WHERE dish_id = $1',
-      [dishId]
-    );
-
-    if (parseInt(orderCheck.rows[0].count) > 0) {
-      // Вместо удаления делаем недоступным
-      await pool.query(
-        'UPDATE dishes SET is_available = false WHERE id = $1',
-        [dishId]
-      );
-      
-      return res.json({
-        success: true,
-        message: 'Блюдо используется в заказах. Сделано недоступным вместо удаления.',
-        soft_delete: true
-      });
-    }
-
-    // Удаляем блюдо
-    const result = await pool.query(
-      'DELETE FROM dishes WHERE id = $1 RETURNING id, name',
-      [dishId]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Блюдо не найдено' });
-    }
-
-    res.json({
-      success: true,
-      message: 'Блюдо успешно удалено',
-      dish: result.rows[0]
-    });
-
-  } catch (error) {
-    console.error('Ошибка удаления блюда:', error);
-    res.status(500).json({ error: 'Ошибка сервера' });
-  }
-});
-
-// Создание заказа из приложения
-app.post('/orders', async (req, res) => {
-  try {
-    const {
-      user_id,
-      restaurant_id,
-      items,
-      delivery_address,
-      payment_method,
-      restaurant_name,
-      restaurant_image
-    } = req.body;
-
-    // Валидация
-    if (!user_id || !restaurant_id || !items || !delivery_address) {
-      return res.status(400).json({
-        error: 'Заполните обязательные поля'
-      });
-    }
-
-    // Рассчитываем общую сумму
-    let totalAmount = 0;
-    for (const item of items) {
-      totalAmount += (item.price || 0) * (item.quantity || 1);
-    }
-
-    // Создаем заказ
-    const orderResult = await pool.query(
-      `INSERT INTO orders (
-        user_id, restaurant_id, restaurant_name, restaurant_image,
-        total_amount, status, delivery_address, payment_method
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-      RETURNING *`,
-      [
-        user_id,
-        restaurant_id,
-        restaurant_name || 'Ресторан',
-        restaurant_image || '',
-        totalAmount,
-        'pending', // Статус по умолчанию
-        delivery_address,
-        payment_method || 'Картой онлайн'
-      ]
-    );
-
-    const order = orderResult.rows[0];
-
-    // Добавляем элементы заказа
-    for (const item of items) {
-      await pool.query(
-        `INSERT INTO order_items (
-          order_id, dish_id, dish_name, dish_price, quantity
-        ) VALUES ($1, $2, $3, $4, $5)`,
-        [
-          order.id,
-          item.dish_id,
-          item.dish_name,
-          item.price,
-          item.quantity || 1
-        ]
-      );
-    }
-
-    // Получаем полную информацию о заказе
-    const fullOrder = await pool.query(
-      `SELECT o.*, 
-       json_agg(
-         json_build_object(
-           'dish_id', oi.dish_id,
-           'dish_name', oi.dish_name,
-           'dish_price', oi.dish_price,
-           'quantity', oi.quantity
-         )
-       ) as items
-       FROM orders o
-       LEFT JOIN order_items oi ON o.id = oi.order_id
-       WHERE o.id = $1
-       GROUP BY o.id`,
-      [order.id]
-    );
-
-    // Здесь будет вызов вебхука для Telegram (добавим позже)
-    // await notifyTelegramAboutOrder(fullOrder.rows[0]);
-
-    res.json({
-      success: true,
-      message: 'Заказ успешно создан',
-      order: fullOrder.rows[0]
-    });
-
-  } catch (error) {
-    console.error('Ошибка создания заказа:', error);
-    res.status(500).json({ error: 'Ошибка сервера' });
-  }
-});
-
-// Получение списка заказов (для админов)
-app.get('/admin/orders', async (req, res) => {
-  try {
-    if (!validateAdminApiKey(req)) {
-      return res.status(401).json({ error: 'Неверный API ключ' });
-    }
-
-    const { status, limit = 50 } = req.query;
-
-    let query = `
-      SELECT o.*, 
-      json_agg(
-        json_build_object(
-          'dish_id', oi.dish_id,
-          'dish_name', oi.dish_name,
-          'dish_price', oi.dish_price,
-          'quantity', oi.quantity
-        )
-      ) as items,
-      u.name as user_name,
-      u.phone as user_phone
-      FROM orders o
-      LEFT JOIN order_items oi ON o.id = oi.order_id
-      LEFT JOIN users u ON o.user_id = u.id
-    `;
-
-    const params = [];
-    if (status) {
-      query += ' WHERE o.status = $1';
-      params.push(status);
-    }
-
-    query += ` GROUP BY o.id, u.name, u.phone 
-               ORDER BY o.order_date DESC 
-               LIMIT ${limit}`;
-
-    const result = await pool.query(query, params);
-
-    res.json(result.rows);
-
-  } catch (error) {
-    console.error('Ошибка получения заказов:', error);
-    res.status(500).json({ error: 'Ошибка сервера' });
   }
 });
 
@@ -1329,16 +1427,20 @@ app.get('/admin/orders', async (req, res) => {
 app.put('/admin/orders/:id/status', async (req, res) => {
   try {
     if (!validateAdminApiKey(req)) {
-      return res.status(401).json({ error: 'Неверный API ключ' });
+      return res.status(401).json({ 
+        success: false,
+        error: 'Неверный API ключ' 
+      });
     }
 
     const orderId = req.params.id;
     const { status } = req.body;
 
-    const validStatuses = ['pending', 'confirmed', 'preparing', 'delivering', 'delivered', 'cancelled'];
+    const validStatuses = ['pending', 'preparing', 'delivering', 'delivered', 'cancelled'];
     
     if (!validStatuses.includes(status)) {
       return res.status(400).json({
+        success: false,
         error: `Неверный статус. Допустимые значения: ${validStatuses.join(', ')}`
       });
     }
@@ -1349,10 +1451,11 @@ app.put('/admin/orders/:id/status', async (req, res) => {
     );
 
     if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Заказ не найден' });
+      return res.status(404).json({ 
+        success: false,
+        error: 'Заказ не найден' 
+      });
     }
-
-    // Здесь будет уведомление в Telegram об изменении статуса
 
     res.json({
       success: true,
@@ -1361,26 +1464,54 @@ app.put('/admin/orders/:id/status', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Ошибка обновления статуса:', error);
-    res.status(500).json({ error: 'Ошибка сервера' });
+    log(`❌ Ошибка обновления статуса: ${error.message}`);
+    res.status(500).json({ 
+      success: false,
+      error: 'Ошибка сервера' 
+    });
   }
 });
 
-// Вебхук для уведомлений в Telegram
-app.post('/webhook/telegram/notify', async (req, res) => {
+// ==================== ЗАПУСК СЕРВЕРА ====================
+
+async function startServer() {
   try {
-    const { chat_id, message } = req.body;
-    
-    // Здесь будет логика отправки в Telegram
-    // Пока просто логируем
-    console.log('📨 Telegram notification:', { chat_id, message });
-    
-    res.json({ success: true, sent: true });
-    
+    await initializeDatabase();
+
+    app.listen(PORT, () => {
+      log(`\n🚀 Сервер запущен!`);
+      log(`📡 Порт: ${PORT}`);
+      log(`🌐 Режим базы: ${isDatabaseConnected ? '✅ Подключена' : '⚠️ Мок-режим'}`);
+      log(`🔧 NODE_ENV: ${process.env.NODE_ENV || 'development'}`);
+      
+      if (process.env.RAILWAY_PUBLIC_DOMAIN) {
+        log(`🌍 Public URL: https://${process.env.RAILWAY_PUBLIC_DOMAIN}`);
+      } else if (process.env.RAILWAY_STATIC_URL) {
+        log(`🌍 Railway URL: ${process.env.RAILWAY_STATIC_URL}`);
+      } else {
+        log(`🌍 Local URL: http://localhost:${PORT}`);
+      }
+      
+      log(`\n📚 Основные эндпоинты:`);
+      log(`   👤 Регистрация: POST /register`);
+      log(`   🔐 Вход: POST /login`);
+      log(`   👤 Профиль: GET /users/me`);
+      log(`   📊 Статистика: GET /users/me/stats`);
+      log(`   📦 Заказы: GET /users/me/orders`);
+      log(`   🛒 Создать заказ: POST /orders`);
+      log(`   🍽️ Рестораны: GET /restaurants`);
+      log(`   📋 Меню: GET /restaurants/:id/menu`);
+      log(`\n🤖 Эндпоинты для админов:`);
+      log(`   🔄 Переключить блюдо: POST /bot/dish/:id/toggle`);
+      log(`   📋 Информация о блюде: GET /bot/dish/:id`);
+      log(`   ➕ Создать блюдо: POST /admin/dishes`);
+      log(`   ⚠️ Заголовок: X-Admin-API-Key: ${ADMIN_API_KEY}`);
+    });
+
   } catch (error) {
-    console.error('Webhook error:', error);
-    res.status(500).json({ error: 'Ошибка отправки' });
+    log(`❌ Критическая ошибка запуска: ${error.message}`);
+    process.exit(1);
   }
-});
+}
 
 startServer();
