@@ -3,6 +3,7 @@ const cors = require('cors');
 const { Pool } = require('pg');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const axios = require('axios');
 require('dotenv').config();
 
 const app = express();
@@ -22,9 +23,52 @@ function log(message) {
 
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-in-production';
 const ADMIN_API_KEY = process.env.ADMIN_API_KEY || 'dev-admin-key';
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
 let pool;
 let isDatabaseConnected = false;
+
+// Функция отправки уведомления в Telegram
+async function sendTelegramNotification(orderDetails) {
+  try {
+    if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
+      console.log('⚠️ Telegram bot token or chat ID not configured');
+      return;
+    }
+
+    const message = `
+🆕 НОВЫЙ ЗАКАЗ #${orderDetails.id}
+👤 Клиент: ${orderDetails.customerName}
+📞 Телефон: ${orderDetails.customerPhone}
+📍 Адрес: ${orderDetails.deliveryAddress}
+🍽️ Ресторан: ${orderDetails.restaurantName}
+💰 Сумма: ${orderDetails.totalAmount} ₽
+📦 Товаров: ${orderDetails.itemCount} шт.
+🕐 Время: ${new Date().toLocaleString('ru-RU')}
+
+Состав заказа:
+${orderDetails.items.map(item => `• ${item.dishName} x${item.quantity} - ${item.totalPrice} ₽`).join('\n')}
+    `;
+
+    const response = await axios.post(
+      `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
+      {
+        chat_id: TELEGRAM_CHAT_ID,
+        text: message,
+        parse_mode: 'HTML'
+      },
+      { timeout: 10000 }
+    );
+
+    console.log('✅ Telegram notification sent successfully');
+    return response.data;
+  } catch (error) {
+    console.error('❌ Error sending Telegram notification:', error.message);
+    // Не бросаем ошибку, чтобы не ломать создание заказа
+    return null;
+  }
+}
 
 async function initializeDatabase() {
   try {
@@ -304,13 +348,15 @@ app.get('/', (req, res) => {
     message: '🚀 Food Delivery API работает!',
     status: 'ok',
     database: isDatabaseConnected ? 'connected' : 'mock-mode',
+    telegram: TELEGRAM_BOT_TOKEN ? 'configured' : 'not-configured',
     version: '1.0.0',
     endpoints: {
       auth: ['/register (POST)', '/login (POST)', '/verify-email (GET)', '/reset-password (POST)'],
       user: ['/users/me (GET)', '/users/me/stats (GET)', '/users/me/orders (GET)'],
       restaurants: ['/restaurants (GET)', '/restaurants/:id (GET)', '/restaurants/:id/menu (GET)'],
       orders: ['/orders (POST)', '/orders/:id (GET)'],
-      admin: ['/admin/* (требует X-Admin-API-Key)']
+      admin: ['/admin/* (требует X-Admin-API-Key)'],
+      telegram: ['/test-notification (POST)']
     }
   });
 });
@@ -320,6 +366,7 @@ app.get('/health', (req, res) => {
     status: 'ok',
     timestamp: new Date().toISOString(),
     database: isDatabaseConnected ? 'connected' : 'mock-mode',
+    telegram: TELEGRAM_BOT_TOKEN ? 'configured' : 'not-configured',
     environment: process.env.NODE_ENV || 'development'
   });
 });
@@ -907,7 +954,9 @@ app.post('/orders', async (req, res) => {
       payment_method,
       restaurant_name,
       restaurant_image,
-      notes
+      notes,
+      customer_name,
+      customer_phone
     } = req.body;
 
     log(`🛒 Создание заказа для пользователя ${userId}`);
@@ -927,7 +976,7 @@ app.post('/orders', async (req, res) => {
         const orderItems = [];
         
         for (const item of items) {
-          const price = parseFloat(item.price) || 0;
+          const price = parseFloat(item.dish_price) || parseFloat(item.price) || 0;
           const quantity = parseInt(item.quantity) || 1;
           totalAmount += price * quantity;
           
@@ -936,7 +985,7 @@ app.post('/orders', async (req, res) => {
             dish_name: item.dish_name,
             dish_price: price,
             quantity: quantity,
-            dish_image: item.dish_image
+            dish_image: item.dish_image || item.imageUrl
           });
         }
 
@@ -1003,6 +1052,29 @@ app.post('/orders', async (req, res) => {
 
         const fullOrder = fullOrderResult.rows[0];
 
+        // Отправляем уведомление в Telegram
+        try {
+          const notificationData = {
+            id: fullOrder.id,
+            customerName: customer_name || 'Клиент',
+            customerPhone: customer_phone || 'Не указан',
+            deliveryAddress: delivery_address,
+            restaurantName: restaurant_name || 'Ресторан',
+            totalAmount: parseFloat(fullOrder.total_amount),
+            itemCount: items.length,
+            items: items.map(item => ({
+              dishName: item.dish_name || item.name || 'Блюдо',
+              quantity: item.quantity || 1,
+              totalPrice: (parseFloat(item.dish_price) || parseFloat(item.price) || 0) * (item.quantity || 1)
+            }))
+          };
+
+          await sendTelegramNotification(notificationData);
+        } catch (telegramError) {
+          log(`⚠️ Ошибка отправки уведомления в Telegram: ${telegramError.message}`);
+          // Не прерываем создание заказа из-за ошибки телеграма
+        }
+
         res.json({
           success: true,
           message: 'Заказ успешно создан',
@@ -1033,18 +1105,40 @@ app.post('/orders', async (req, res) => {
         restaurant_name: restaurant_name || 'Наетый кабан',
         restaurant_image: restaurant_image || 'https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?w=400',
         order_date: new Date().toISOString(),
-        total_amount: items.reduce((sum, item) => sum + (item.price || 0) * (item.quantity || 1), 0),
+        total_amount: items.reduce((sum, item) => sum + (parseFloat(item.dish_price) || parseFloat(item.price) || 0) * (item.quantity || 1), 0),
         status: 'pending',
         delivery_address: delivery_address,
         payment_method: payment_method || 'Картой онлайн',
         items: items.map(item => ({
           dish_id: item.dish_id,
-          dish_name: item.dish_name,
-          dish_price: item.price || 0,
+          dish_name: item.dish_name || item.name || 'Блюдо',
+          dish_price: parseFloat(item.dish_price) || parseFloat(item.price) || 0,
           quantity: item.quantity || 1,
-          dish_image: item.dish_image
+          dish_image: item.dish_image || item.imageUrl
         }))
       };
+
+      // Отправляем уведомление в Telegram даже в мок-режиме
+      try {
+        const notificationData = {
+          id: mockOrder.id,
+          customerName: customer_name || 'Клиент',
+          customerPhone: customer_phone || 'Не указан',
+          deliveryAddress: delivery_address,
+          restaurantName: restaurant_name || 'Наетый кабан',
+          totalAmount: mockOrder.total_amount,
+          itemCount: items.length,
+          items: items.map(item => ({
+            dishName: item.dish_name || item.name || 'Блюдо',
+            quantity: item.quantity || 1,
+            totalPrice: (parseFloat(item.dish_price) || parseFloat(item.price) || 0) * (item.quantity || 1)
+          }))
+        };
+
+        await sendTelegramNotification(notificationData);
+      } catch (telegramError) {
+        log(`⚠️ Ошибка отправки уведомления в Telegram: ${telegramError.message}`);
+      }
 
       res.json({
         success: true,
@@ -1059,6 +1153,37 @@ app.post('/orders', async (req, res) => {
       success: false,
       error: 'Ошибка сервера'
     });
+  }
+});
+
+// Эндпоинт для тестирования уведомлений
+app.post('/test-notification', async (req, res) => {
+  try {
+    if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
+      return res.status(400).json({
+        success: false,
+        error: 'Telegram bot token or chat ID not configured'
+      });
+    }
+
+    const testOrder = {
+      id: 'TEST_' + Date.now(),
+      customerName: 'Тестовый Клиент',
+      customerPhone: '+7 (999) 123-45-67',
+      deliveryAddress: 'ул. Тестовая, д. 1',
+      restaurantName: 'Наетый кабан',
+      totalAmount: 2598,
+      itemCount: 2,
+      items: [
+        { dishName: 'Стейк Рибай', quantity: 1, totalPrice: 1899 },
+        { dishName: 'Картофель по-деревенски', quantity: 2, totalPrice: 698 }
+      ]
+    };
+
+    await sendTelegramNotification(testOrder);
+    res.json({ success: true, message: 'Тестовое уведомление отправлено' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -1388,6 +1513,14 @@ app.post('/admin/dishes', async (req, res) => {
       });
     }
 
+    if (!isDatabaseConnected || !pool) {
+      return res.status(503).json({
+        success: false,
+        error: 'База данных недоступна',
+        mode: 'mock'
+      });
+    }
+
     const result = await pool.query(
       `INSERT INTO dishes (
         restaurant_id, name, description, image_url, price,
@@ -1482,6 +1615,7 @@ async function startServer() {
       log(`\n🚀 Сервер запущен!`);
       log(`📡 Порт: ${PORT}`);
       log(`🌐 Режим базы: ${isDatabaseConnected ? '✅ Подключена' : '⚠️ Мок-режим'}`);
+      log(`🤖 Telegram: ${TELEGRAM_BOT_TOKEN ? '✅ Настроен' : '⚠️ Не настроен'}`);
       log(`🔧 NODE_ENV: ${process.env.NODE_ENV || 'development'}`);
       
       if (process.env.RAILWAY_PUBLIC_DOMAIN) {
@@ -1505,6 +1639,7 @@ async function startServer() {
       log(`   🔄 Переключить блюдо: POST /bot/dish/:id/toggle`);
       log(`   📋 Информация о блюде: GET /bot/dish/:id`);
       log(`   ➕ Создать блюдо: POST /admin/dishes`);
+      log(`   🔔 Тест уведомления: POST /test-notification`);
       log(`   ⚠️ Заголовок: X-Admin-API-Key: ${ADMIN_API_KEY}`);
     });
 
