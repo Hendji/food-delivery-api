@@ -1005,7 +1005,6 @@ app.post('/orders', async (req, res) => {
             'pending',
             delivery_address,
             payment_method || 'Картой онлайн',
-            notes || null
           ]
         );
 
