@@ -845,6 +845,367 @@ app.get('/users/me/orders', async (req, res) => {
   }
 });
 
+// Эндпоинт для получения заказов (для Telegram бота)
+app.get('/bot/orders', async (req, res) => {
+  try {
+    // Проверяем API ключ администратора
+    const apiKey = req.headers['x-admin-api-key'];
+    if (!apiKey || apiKey !== ADMIN_API_KEY) {
+      return res.status(401).json({
+        success: false,
+        error: 'Неверный API ключ'
+      });
+    }
+
+    log('🤖 Telegram bot запрашивает заказы');
+
+    if (isDatabaseConnected && pool) {
+      try {
+        // Получаем все заказы (без фильтрации по пользователю)
+        const ordersResult = await pool.query(
+          `SELECT 
+            o.id,
+            o.restaurant_name,
+            o.restaurant_image,
+            o.total_amount,
+            o.status,
+            o.delivery_address,
+            o.payment_method,
+            o.order_date,
+            o.customer_name,
+            o.customer_phone,
+            COALESCE(
+              json_agg(
+                json_build_object(
+                  'dish_id', oi.dish_id,
+                  'dish_name', oi.dish_name,
+                  'dish_price', oi.dish_price,
+                  'quantity', oi.quantity,
+                  'dish_image', oi.dish_image
+                )
+              ) FILTER (WHERE oi.id IS NOT NULL),
+              '[]'
+            ) as items
+           FROM orders o
+           LEFT JOIN order_items oi ON o.id = oi.order_id
+           GROUP BY o.id
+           ORDER BY o.order_date DESC
+           LIMIT 50`
+        );
+
+        const orders = ordersResult.rows.map(order => ({
+          id: order.id.toString(),
+          restaurant_name: order.restaurant_name || 'Ресторан',
+          restaurant_image: order.restaurant_image || '',
+          order_date: order.order_date.toISOString(),
+          total_amount: parseFloat(order.total_amount),
+          status: order.status || 'pending',
+          delivery_address: order.delivery_address || 'Адрес не указан',
+          payment_method: order.payment_method || 'Не указан',
+          customer_name: order.customer_name || 'Клиент',
+          customer_phone: order.customer_phone || 'Телефон не указан',
+          items: order.items || []
+        }));
+
+        res.json({ 
+          success: true, 
+          orders: orders 
+        });
+
+      } catch (dbError) {
+        log(`❌ Ошибка базы при получении заказов для бота: ${dbError.message}`);
+        res.status(500).json({ 
+          success: false, 
+          error: 'Ошибка базы данных' 
+        });
+      }
+    } else {
+      // Мок-данные для тестирования
+      const mockOrders = [
+        {
+          id: '100',
+          restaurant_name: 'Наетый кабан',
+          restaurant_image: 'https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?w=400',
+          order_date: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+          total_amount: 2598.00,
+          status: 'pending',
+          delivery_address: 'ул. Ленина, д. 10, кв. 5',
+          payment_method: 'Картой онлайн',
+          customer_name: 'Иван Иванов',
+          customer_phone: '+7 (999) 123-45-67',
+          items: [
+            {
+              dish_id: '1',
+              dish_name: 'Стейк Рибай',
+              dish_price: 1899.00,
+              quantity: 1
+            },
+            {
+              dish_id: '5',
+              dish_name: 'Картофель по-деревенски',
+              dish_price: 299.00,
+              quantity: 2
+            }
+          ]
+        }
+      ];
+      
+      res.json({ 
+        success: true, 
+        orders: mockOrders,
+        mode: 'mock'
+      });
+    }
+
+  } catch (error) {
+    log(`❌ Ошибка получения заказов для бота: ${error.message}`);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Ошибка сервера' 
+    });
+  }
+});
+
+// Эндпоинт для обновления статуса заказа (для Telegram бота)
+app.put('/bot/orders/:id/status', async (req, res) => {
+  try {
+    // Проверяем API ключ администратора
+    const apiKey = req.headers['x-admin-api-key'];
+    if (!apiKey || apiKey !== ADMIN_API_KEY) {
+      return res.status(401).json({
+        success: false,
+        error: 'Неверный API ключ'
+      });
+    }
+
+    const orderId = req.params.id;
+    const { status } = req.body;
+
+    log(`🤖 Telegram bot обновляет статус заказа ${orderId} на ${status}`);
+
+    const validStatuses = ['pending', 'preparing', 'delivering', 'delivered', 'cancelled'];
+    
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        error: `Неверный статус. Допустимые значения: ${validStatuses.join(', ')}`
+      });
+    }
+
+    if (isDatabaseConnected && pool) {
+      try {
+        const result = await pool.query(
+          `UPDATE orders SET status = $1 WHERE id = $2 RETURNING *`,
+          [status, orderId]
+        );
+
+        if (result.rows.length === 0) {
+          return res.status(404).json({ 
+            success: false,
+            error: 'Заказ не найден' 
+          });
+        }
+
+        const order = result.rows[0];
+
+        // Отправляем уведомление в телеграм пользователю, если у него есть chat_id
+        if (order.user_id) {
+          try {
+            const userResult = await pool.query(
+              'SELECT telegram_chat_id FROM users WHERE id = $1',
+              [order.user_id]
+            );
+            
+            if (userResult.rows.length > 0 && userResult.rows[0].telegram_chat_id) {
+              const chatId = userResult.rows[0].telegram_chat_id;
+              const statusText = {
+                'pending': 'принят в обработку',
+                'preparing': 'начали готовить',
+                'delivering': 'отправлен курьером',
+                'delivered': 'доставлен',
+                'cancelled': 'отменен'
+              }[status] || 'обновлен';
+              
+              const message = 
+                `🔄 Статус вашего заказа #${order.id} изменен:\n` +
+                `Статус: ${statusText}\n` +
+                `Время: ${new Date().toLocaleString('ru-RU')}`;
+              
+              await axios.post(
+                `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
+                {
+                  chat_id: chatId,
+                  text: message
+                },
+                { timeout: 5000 }
+              );
+              
+              log(`✅ Уведомление отправлено пользователю ${chatId}`);
+            }
+          } catch (telegramError) {
+            log(`⚠️ Ошибка отправки уведомления пользователю: ${telegramError.message}`);
+          }
+        }
+
+        res.json({
+          success: true,
+          message: `Статус заказа обновлен на "${status}"`,
+          order: {
+            id: order.id,
+            status: order.status,
+            updated_at: order.updated_at || new Date().toISOString()
+          }
+        });
+
+      } catch (dbError) {
+        log(`❌ Ошибка базы при обновлении статуса: ${dbError.message}`);
+        res.status(500).json({ 
+          success: false,
+          error: 'Ошибка базы данных' 
+        });
+      }
+    } else {
+      // Мок-режим
+      res.json({
+        success: true,
+        message: `Статус заказа обновлен на "${status}" (тестовый режим)`,
+        order: {
+          id: orderId,
+          status: status,
+          updated_at: new Date().toISOString(),
+          mode: 'mock'
+        }
+      });
+    }
+
+  } catch (error) {
+    log(`❌ Ошибка обновления статуса заказа: ${error.message}`);
+    res.status(500).json({ 
+      success: false,
+      error: 'Ошибка сервера' 
+    });
+  }
+});
+
+// Эндпоинт для получения конкретного заказа (для Telegram бота)
+app.get('/bot/orders/:id', async (req, res) => {
+  try {
+    // Проверяем API ключ администратора
+    const apiKey = req.headers['x-admin-api-key'];
+    if (!apiKey || apiKey !== ADMIN_API_KEY) {
+      return res.status(401).json({
+        success: false,
+        error: 'Неверный API ключ'
+      });
+    }
+
+    const orderId = req.params.id;
+    log(`🤖 Telegram bot запрашивает заказ ${orderId}`);
+
+    if (isDatabaseConnected && pool) {
+      try {
+        const result = await pool.query(
+          `SELECT 
+            o.*,
+            COALESCE(
+              json_agg(
+                json_build_object(
+                  'dish_id', oi.dish_id,
+                  'dish_name', oi.dish_name,
+                  'dish_price', oi.dish_price,
+                  'quantity', oi.quantity,
+                  'dish_image', oi.dish_image
+                )
+              ) FILTER (WHERE oi.id IS NOT NULL),
+              '[]'
+            ) as items
+           FROM orders o
+           LEFT JOIN order_items oi ON o.id = oi.order_id
+           WHERE o.id = $1
+           GROUP BY o.id`,
+          [orderId]
+        );
+
+        if (result.rows.length === 0) {
+          return res.status(404).json({ 
+            success: false,
+            error: 'Заказ не найден' 
+          });
+        }
+
+        const order = result.rows[0];
+        
+        const formattedOrder = {
+          id: order.id.toString(),
+          restaurant_name: order.restaurant_name || 'Ресторан',
+          restaurant_image: order.restaurant_image || '',
+          order_date: order.order_date.toISOString(),
+          total_amount: parseFloat(order.total_amount),
+          status: order.status || 'pending',
+          delivery_address: order.delivery_address || 'Адрес не указан',
+          payment_method: order.payment_method || 'Не указан',
+          customer_name: order.customer_name || 'Клиент',
+          customer_phone: order.customer_phone || 'Телефон не указан',
+          items: order.items || []
+        };
+
+        res.json({
+          success: true,
+          order: formattedOrder
+        });
+
+      } catch (dbError) {
+        log(`❌ Ошибка базы при получении заказа: ${dbError.message}`);
+        res.status(500).json({ 
+          success: false,
+          error: 'Ошибка базы данных' 
+        });
+      }
+    } else {
+      // Мок-данные
+      const mockOrder = {
+        id: orderId,
+        restaurant_name: 'Наетый кабан',
+        restaurant_image: 'https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?w=400',
+        order_date: new Date().toISOString(),
+        total_amount: 2598.00,
+        status: 'pending',
+        delivery_address: 'ул. Ленина, д. 10, кв. 5',
+        payment_method: 'Картой онлайн',
+        customer_name: 'Иван Иванов',
+        customer_phone: '+7 (999) 123-45-67',
+        items: [
+          {
+            dish_id: '1',
+            dish_name: 'Стейк Рибай',
+            dish_price: 1899.00,
+            quantity: 1
+          },
+          {
+            dish_id: '5',
+            dish_name: 'Картофель по-деревенски',
+            dish_price: 299.00,
+            quantity: 2
+          }
+        ],
+        mode: 'mock'
+      };
+      
+      res.json({
+        success: true,
+        order: mockOrder
+      });
+    }
+
+  } catch (error) {
+    log(`❌ Ошибка получения заказа: ${error.message}`);
+    res.status(500).json({ 
+      success: false,
+      error: 'Ошибка сервера' 
+    });
+  }
+});
+
 // Получение списка ресторанов
 app.get('/restaurants', async (req, res) => {
   try {
