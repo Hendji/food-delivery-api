@@ -220,7 +220,7 @@ async function createOrUpdateTables(client) {
         status VARCHAR(50) DEFAULT 'pending',
         delivery_address TEXT NOT NULL,
         payment_method VARCHAR(50),
-        order_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        order_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
     log('✅ Таблица orders создана/проверена');
