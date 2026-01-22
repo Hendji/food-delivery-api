@@ -1358,8 +1358,9 @@ app.post('/orders', async (req, res) => {
         const orderResult = await pool.query(
           `INSERT INTO orders (
             user_id, restaurant_id, restaurant_name, restaurant_image,
-            total_amount, status, delivery_address, payment_method
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            total_amount, status, delivery_address, payment_method,
+            customer_name, customer_phone
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
           RETURNING *`,
           [
             userId,
@@ -1370,6 +1371,8 @@ app.post('/orders', async (req, res) => {
             'pending',
             delivery_address,
             payment_method || 'Картой онлайн',
+            customer_name || 'Клиент',  
+            customer_phone || 'Не указан'
           ]
         );
 
