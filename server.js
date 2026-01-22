@@ -2035,36 +2035,47 @@ async function startServer() {
   try {
     await initializeDatabase();
 
+    // ДОБАВЬТЕ ЭТУ ПРОВЕРКУ ПЕРЕД app.listen
+    console.log('\n🔍 ПРОВЕРКА ПЕРЕМЕННЫХ ОКРУЖЕНИЯ:');
+    console.log('='.repeat(50));
+    console.log(`🤖 TELEGRAM_BOT_TOKEN: ${process.env.TELEGRAM_BOT_TOKEN ? '✅ УСТАНОВЛЕН' : '❌ НЕ УСТАНОВЛЕН'}`);
+    console.log(`💬 TELEGRAM_CHAT_ID: ${process.env.TELEGRAM_CHAT_ID ? '✅ ' + process.env.TELEGRAM_CHAT_ID : '❌ НЕ УСТАНОВЛЕН'}`);
+    console.log(`🔐 JWT_SECRET: ${process.env.JWT_SECRET ? '✅ УСТАНОВЛЕН' : '❌ НЕ УСТАНОВЛЕН'}`);
+    console.log(`👑 ADMIN_API_KEY: ${process.env.ADMIN_API_KEY ? '✅ УСТАНОВЛЕН' : '❌ НЕ УСТАНОВЛЕН'}`);
+    console.log(`🗄️ DATABASE_URL: ${process.env.DATABASE_URL ? '✅ УСТАНОВЛЕН' : '❌ НЕ УСТАНОВЛЕН'}`);
+    console.log('='.repeat(50));
+    
+    // Если Telegram не настроен, показываем предупреждение
+    if (!process.env.TELEGRAM_BOT_TOKEN || !process.env.TELEGRAM_CHAT_ID) {
+      console.log('\n⚠️ ВНИМАНИЕ: Telegram не настроен!');
+      console.log('   Для настройки добавьте в Railway Variables:');
+      console.log('   1. TELEGRAM_BOT_TOKEN - получите у @BotFather');
+      console.log(`   2. TELEGRAM_CHAT_ID = 8512592804 (ваш ID)`);
+      console.log('   После добавления нажмите "Redeploy" в Railway');
+    } else {
+      console.log('\n✅ Telegram полностью настроен!');
+      console.log(`   Уведомления будут отправляться в чат: ${process.env.TELEGRAM_CHAT_ID}`);
+    }
+
     app.listen(PORT, () => {
       log(`\n🚀 Сервер запущен!`);
       log(`📡 Порт: ${PORT}`);
       log(`🌐 Режим базы: ${isDatabaseConnected ? '✅ Подключена' : '⚠️ Мок-режим'}`);
-      log(`🤖 Telegram: ${TELEGRAM_BOT_TOKEN ? '✅ Настроен' : '⚠️ Не настроен'}`);
-      log(`🔧 NODE_ENV: ${process.env.NODE_ENV || 'development'}`);
+      // Обновите эту строку для более детального вывода
+      const hasTelegramToken = !!process.env.TELEGRAM_BOT_TOKEN;
+      const hasTelegramChatId = !!process.env.TELEGRAM_CHAT_ID;
       
-      if (process.env.RAILWAY_PUBLIC_DOMAIN) {
-        log(`🌍 Public URL: https://${process.env.RAILWAY_PUBLIC_DOMAIN}`);
-      } else if (process.env.RAILWAY_STATIC_URL) {
-        log(`🌍 Railway URL: ${process.env.RAILWAY_STATIC_URL}`);
+      if (hasTelegramToken && hasTelegramChatId) {
+        log(`🤖 Telegram: ✅ Настроен (chat ID: ${process.env.TELEGRAM_CHAT_ID})`);
+      } else if (hasTelegramToken && !hasTelegramChatId) {
+        log(`🤖 Telegram: ⚠️ Частично настроен (нет TELEGRAM_CHAT_ID)`);
+      } else if (!hasTelegramToken && hasTelegramChatId) {
+        log(`🤖 Telegram: ⚠️ Частично настроен (нет TELEGRAM_BOT_TOKEN)`);
       } else {
-        log(`🌍 Local URL: http://localhost:${PORT}`);
+        log(`🤖 Telegram: ❌ Не настроен`);
       }
       
-      log(`\n📚 Основные эндпоинты:`);
-      log(`   👤 Регистрация: POST /register`);
-      log(`   🔐 Вход: POST /login`);
-      log(`   👤 Профиль: GET /users/me`);
-      log(`   📊 Статистика: GET /users/me/stats`);
-      log(`   📦 Заказы: GET /users/me/orders`);
-      log(`   🛒 Создать заказ: POST /orders`);
-      log(`   🍽️ Рестораны: GET /restaurants`);
-      log(`   📋 Меню: GET /restaurants/:id/menu`);
-      log(`\n🤖 Эндпоинты для админов:`);
-      log(`   🔄 Переключить блюдо: POST /bot/dish/:id/toggle`);
-      log(`   📋 Информация о блюде: GET /bot/dish/:id`);
-      log(`   ➕ Создать блюдо: POST /admin/dishes`);
-      log(`   🔔 Тест уведомления: POST /test-notification`);
-      log(`   ⚠️ Заголовок: X-Admin-API-Key: ${ADMIN_API_KEY}`);
+      // ... остальной ваш код
     });
 
   } catch (error) {
@@ -2072,5 +2083,24 @@ async function startServer() {
     process.exit(1);
   }
 }
+
+// Эндпоинт для проверки конфигурации
+app.get('/config-check', (req, res) => {
+  res.json({
+    telegram: {
+      hasBotToken: !!process.env.TELEGRAM_BOT_TOKEN,
+      hasChatId: !!process.env.TELEGRAM_CHAT_ID,
+      chatId: process.env.TELEGRAM_CHAT_ID || null,
+      status: process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID 
+        ? 'fully_configured' 
+        : 'not_configured'
+    },
+    database: {
+      connected: isDatabaseConnected,
+      hasUrl: !!process.env.DATABASE_URL
+    },
+    environment: process.env.NODE_ENV || 'development'
+  });
+});
 
 startServer();
