@@ -31,10 +31,10 @@ let isDatabaseConnected = false;
 
 // Функция отправки уведомления в Telegram
 async function sendTelegramNotification(orderDetails) {
-  try {
-    if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
-      console.log('⚠️ Telegram bot token or chat ID not configured');
-      return;
+   try {
+    if (!TELEGRAM_BOT_TOKEN) {
+      console.log('⚠️ Telegram bot token not configured');
+      return null;
     }
 
     const message = `
