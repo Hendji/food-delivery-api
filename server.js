@@ -1335,16 +1335,22 @@ app.post('/orders', async (req, res) => {
         const orderItems = [];
         
         for (const item of items) {
-          const price = parseFloat(item.dish_price) || parseFloat(item.price) || 0;
+          const price = parseFloat(item.dish_price) || 
+                        parseFloat(item.price) || 
+                        0;
+          
           const quantity = parseInt(item.quantity) || 1;
-          totalAmount += price * quantity;
+          const itemTotal = price * quantity;
+          totalAmount += itemTotal;
+          
+          console.log(`🍴 Товар: ${item.dish_name}, Цена: ${price}, Кол-во: ${quantity}, Итого: ${itemTotal}`);
           
           orderItems.push({
             dish_id: item.dish_id,
-            dish_name: item.dish_name,
+            dish_name: item.dish_name || item.name || 'Блюдо',
             dish_price: price,
             quantity: quantity,
-            dish_image: item.dish_image || item.imageUrl
+            dish_image: item.dish_image || item.imageUrl || ''
           });
         }
 
