@@ -265,11 +265,53 @@ async function createOrUpdateTables(client) {
     `);
     log('✅ Таблица favorites создана/проверена');
 
-    await addTestDataIfNeeded(client);
+     await addMissingColumns(client);
 
+    await addTestDataIfNeeded(client);
+    
   } catch (error) {
     log(`❌ Ошибка создания таблиц: ${error.message}`);
     throw error;
+  }
+}
+
+// Новая функция для добавления недостающих колонок
+async function addMissingColumns(client) {
+  try {
+    log('🔍 Проверяем наличие колонок...');
+    
+    // Проверяем и добавляем колонки в orders если их нет
+    const ordersColumns = ['customer_name', 'customer_phone'];
+    for (const column of ordersColumns) {
+      const check = await client.query(`
+        SELECT column_name 
+        FROM information_schema.columns 
+        WHERE table_name = 'orders' AND column_name = $1
+      `, [column]);
+      
+      if (check.rows.length === 0) {
+        const type = column === 'customer_phone' ? 'VARCHAR(20)' : 'VARCHAR(100)';
+        await client.query(`ALTER TABLE orders ADD COLUMN ${column} ${type}`);
+        log(`✅ Добавлена колонка ${column} в orders`);
+      }
+    }
+    
+    // Проверяем и добавляем колонку dish_image в order_items если ее нет
+    const checkDishImage = await client.query(`
+      SELECT column_name 
+      FROM information_schema.columns 
+      WHERE table_name = 'order_items' AND column_name = 'dish_image'
+    `);
+    
+    if (checkDishImage.rows.length === 0) {
+      await client.query(`ALTER TABLE order_items ADD COLUMN dish_image TEXT`);
+      log('✅ Добавлена колонка dish_image в order_items');
+    }
+    
+    log('✅ Проверка колонок завершена');
+  } catch (error) {
+    log(`⚠️ Ошибка при добавлении колонок: ${error.message}`);
+    // Не прерываем выполнение если не удалось добавить колонки
   }
 }
 
