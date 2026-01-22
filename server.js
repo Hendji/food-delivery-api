@@ -1373,28 +1373,39 @@ app.post('/orders', async (req, res) => {
     if (isDatabaseConnected && pool) {
       try {
         // Рассчитываем общую сумму
-        let totalAmount = 0;
-        const orderItems = [];
-        
-        for (const item of items) {
-          const price = parseFloat(item.dish_price) || 
-                        parseFloat(item.price) || 
-                        0;
+          let totalAmount = 0;
+          const orderItems = [];
           
-          const quantity = parseInt(item.quantity) || 1;
-          const itemTotal = price * quantity;
-          totalAmount += itemTotal;
+          console.log('📋 Полученные товары:', JSON.stringify(items, null, 2));
           
-          console.log(`🍴 Товар: ${item.dish_name}, Цена: ${price}, Кол-во: ${quantity}, Итого: ${itemTotal}`);
-          
-          orderItems.push({
-            dish_id: item.dish_id,
-            dish_name: item.dish_name || item.name || 'Блюдо',
-            dish_price: price,
-            quantity: quantity,
-            dish_image: item.dish_image || item.imageUrl || ''
-          });
-        }
+          for (const item of items) {
+            // Отладочный вывод
+            console.log('🍴 Обрабатываю товар:', {
+              dish_name: item.dish_name,
+              price: item.price,
+              dish_price: item.dish_price,
+              quantity: item.quantity
+            });
+            
+            const price = parseFloat(item.dish_price) || 
+                          parseFloat(item.price) || 
+                          parseFloat(item.dishPrice) || // Добавьте все возможные варианты
+                          0;
+            
+            const quantity = parseInt(item.quantity) || 1;
+            const itemTotal = price * quantity;
+            totalAmount += itemTotal;
+            
+            console.log(`💰 Рассчитано: Цена=${price}, Кол-во=${quantity}, Итого=${itemTotal}, Общая=${totalAmount}`);
+            
+            orderItems.push({
+              dish_id: item.dish_id,
+              dish_name: item.dish_name || item.name || 'Блюдо',
+              dish_price: price,
+              quantity: quantity,
+              dish_image: item.dish_image || item.imageUrl || ''
+            });
+          }
 
         // Создаем заказ
         const orderResult = await pool.query(
@@ -1477,6 +1488,10 @@ app.post('/orders', async (req, res) => {
               totalPrice: (parseFloat(item.dish_price) || parseFloat(item.price) || 0) * (item.quantity || 1)
             }))
           };
+
+          console.log('📊 Данные для уведомления:', notificationData);
+          console.log('💰 total_amount из БД:', fullOrder.total_amount);
+          console.log('📦 Количество items:', items.length);
 
           await sendTelegramNotification(notificationData);
         } catch (telegramError) {
