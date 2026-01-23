@@ -1952,7 +1952,7 @@ app.post('/admin/dishes', async (req, res) => {
       name,
       description,
       image_url,
-      price: priceFromBody,
+      price: priceFromBody, // Изменяем имя переменной
       ingredients,
       preparation_time,
       is_vegetarian,
@@ -1960,7 +1960,7 @@ app.post('/admin/dishes', async (req, res) => {
     } = req.body;
 
     // Валидация
-    if (!restaurant_id || !name || !price) {
+    if (!restaurant_id || !name || !priceFromBody) {
       return res.status(400).json({ 
         success: false,
         error: 'Заполните обязательные поля: restaurant_id, name, price' 
@@ -1975,35 +1975,45 @@ app.post('/admin/dishes', async (req, res) => {
       });
     }
 
-    const priceValue = req.body.price;
-      const price = parseFloat(priceValue.toString().replace(',', '.'));
-      
-      if (isNaN(price) || price <= 0) {
-        return res.status(400).json({
-          success: false,
-          error: 'Цена должна быть положительным числом'
-        });
-      }
+    // Парсим цену (убедитесь, что это число)
+    const parsedPrice = typeof priceFromBody === 'string' 
+      ? parseFloat(priceFromBody.replace(',', '.')) 
+      : parseFloat(priceFromBody);
+    
+    console.log('📊 Parsed price:', { 
+      original: priceFromBody, 
+      parsed: parsedPrice,
+      type: typeof priceFromBody 
+    });
+    
+    if (isNaN(parsedPrice) || parsedPrice <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Цена должна быть положительным числом'
+      });
+    }
     
     const result = await pool.query(
-        `INSERT INTO dishes (
-          restaurant_id, name, description, image_url, price,
-          ingredients, preparation_time, is_vegetarian, is_spicy, is_available
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-        RETURNING *`,
-        [
-          restaurant_id,
-          name,
-          description || '',
-          image_url || '',
-          parsedPrice, 
-          ingredients || [],
-          preparation_time || 30,
-          is_vegetarian || false,
-          is_spicy || false,
-          true
-        ]
-      );
+      `INSERT INTO dishes (
+        restaurant_id, name, description, image_url, price,
+        ingredients, preparation_time, is_vegetarian, is_spicy, is_available
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      RETURNING *`,
+      [
+        restaurant_id,
+        name,
+        description || '',
+        image_url || '',
+        parsedPrice, // Используем parsedPrice
+        Array.isArray(ingredients) ? ingredients : (ingredients ? [ingredients] : []),
+        preparation_time || 30,
+        Boolean(is_vegetarian),
+        Boolean(is_spicy),
+        true
+      ]
+    );
+
+    console.log('✅ Блюдо создано:', result.rows[0]);
 
     res.json({
       success: true,
@@ -2012,10 +2022,12 @@ app.post('/admin/dishes', async (req, res) => {
     });
 
   } catch (error) {
+    console.error('❌ Полная ошибка создания блюда:', error);
     log(`❌ Ошибка создания блюда: ${error.message}`);
     res.status(500).json({ 
       success: false,
-      error: 'Ошибка сервера' 
+      error: 'Ошибка сервера',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 });
