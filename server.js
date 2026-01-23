@@ -2155,4 +2155,27 @@ app.get('/config-check', (req, res) => {
   });
 });
 
+process.on('uncaughtException', (error) => {
+  console.error('🔥 Непойманное исключение:', error);
+  console.error('Stack:', error.stack);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('🔥 Необработанный промис:', reason);
+  console.error('Promise:', promise);
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('🛑 Получен SIGTERM, завершаем работу...');
+  if (pool) {
+    pool.end(() => {
+      console.log('✅ База данных отключена');
+      process.exit(0);
+    });
+  } else {
+    process.exit(0);
+  }
+});
+
 startServer();
