@@ -1610,6 +1610,132 @@ app.post('/orders', async (req, res) => {
   }
 });
 
+// Обновление существующего блюда
+app.put('/admin/dishes/:id', async (req, res) => {
+  try {
+    if (!validateAdminApiKey(req)) {
+      return res.status(401).json({ 
+        success: false,
+        error: 'Неверный API ключ' 
+      });
+    }
+
+    const dishId = req.params.id;
+    const updates = req.body;
+
+    // Валидация - хотя бы одно поле для обновления
+    if (!updates || Object.keys(updates).length === 0) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Нет данных для обновления' 
+      });
+    }
+
+    if (!isDatabaseConnected || !pool) {
+      return res.status(503).json({
+        success: false,
+        error: 'База данных недоступна'
+      });
+    }
+
+    // Собираем поля для обновления
+    const updateFields = [];
+    const updateValues = [];
+    let paramCount = 1;
+
+    if (updates.name !== undefined) {
+      updateFields.push(`name = $${paramCount++}`);
+      updateValues.push(updates.name);
+    }
+    
+    if (updates.description !== undefined) {
+      updateFields.push(`description = $${paramCount++}`);
+      updateValues.push(updates.description);
+    }
+    
+    if (updates.image_url !== undefined) {
+      updateFields.push(`image_url = $${paramCount++}`);
+      updateValues.push(updates.image_url);
+    }
+    
+    if (updates.price !== undefined) {
+      // Парсим цену
+      const parsedPrice = typeof updates.price === 'string' 
+        ? parseFloat(updates.price.replace(',', '.')) 
+        : parseFloat(updates.price);
+      
+      if (isNaN(parsedPrice) || parsedPrice <= 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'Цена должна быть положительным числом'
+        });
+      }
+      
+      updateFields.push(`price = $${paramCount++}`);
+      updateValues.push(parsedPrice);
+    }
+    
+    if (updates.preparation_time !== undefined) {
+      updateFields.push(`preparation_time = $${paramCount++}`);
+      updateValues.push(parseInt(updates.preparation_time) || 30);
+    }
+    
+    if (updates.is_spicy !== undefined) {
+      updateFields.push(`is_spicy = $${paramCount++}`);
+      updateValues.push(Boolean(updates.is_spicy));
+    }
+    
+    if (updates.is_vegetarian !== undefined) {
+      updateFields.push(`is_vegetarian = $${paramCount++}`);
+      updateValues.push(Boolean(updates.is_vegetarian));
+    }
+    
+    if (updates.is_available !== undefined) {
+      updateFields.push(`is_available = $${paramCount++}`);
+      updateValues.push(Boolean(updates.is_available));
+    }
+
+    if (updateFields.length === 0) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Нет валидных полей для обновления' 
+      });
+    }
+
+    updateValues.push(dishId);
+    
+    const query = `
+      UPDATE dishes 
+      SET ${updateFields.join(', ')}
+      WHERE id = $${paramCount}
+      RETURNING *
+    `;
+
+    const result = await pool.query(query, updateValues);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ 
+        success: false,
+        error: 'Блюдо не найдено' 
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Блюдо успешно обновлено',
+      dish: result.rows[0]
+    });
+
+  } catch (error) {
+    console.error('❌ Ошибка обновления блюда:', error);
+    log(`❌ Ошибка обновления блюда: ${error.message}`);
+    res.status(500).json({ 
+      success: false,
+      error: 'Ошибка сервера при обновлении блюда'
+    });
+  }
+});
+
 // Эндпоинт для тестирования уведомлений
 app.post('/test-notification', async (req, res) => {
   try {
