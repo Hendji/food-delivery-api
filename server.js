@@ -71,6 +71,7 @@ ${orderDetails.items.map(item => {
   const itemTotal = price * quantity;
   return `• ${item.dishName} x${quantity} - ${itemTotal} ₽`;
 }).join('\n')}
+  `; 
 
     const response = await axios.post(
       `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
@@ -1951,7 +1952,7 @@ app.post('/admin/dishes', async (req, res) => {
       name,
       description,
       image_url,
-      price,
+      price: priceFromBody,
       ingredients,
       preparation_time,
       is_vegetarian,
@@ -1995,7 +1996,7 @@ app.post('/admin/dishes', async (req, res) => {
           name,
           description || '',
           image_url || '',
-          price, 
+          parsedPrice, 
           ingredients || [],
           preparation_time || 30,
           is_vegetarian || false,
