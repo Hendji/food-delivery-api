@@ -31,11 +31,28 @@ let isDatabaseConnected = false;
 
 // Функция отправки уведомления в Telegram
 async function sendTelegramNotification(orderDetails) {
-   try {
+  try {
     if (!TELEGRAM_BOT_TOKEN) {
       console.log('⚠️ Telegram bot token not configured');
       return null;
     }
+
+    // Рассчитываем общую сумму и количество товаров
+    let totalAmount = 0;
+    let itemCount = 0;
+    
+    if (orderDetails.items && Array.isArray(orderDetails.items)) {
+      orderDetails.items.forEach(item => {
+        const price = parseFloat(item.dish_price) || parseFloat(item.price) || 0;
+        const quantity = parseInt(item.quantity) || 1;
+        totalAmount += price * quantity;
+        itemCount += quantity;
+      });
+    }
+
+    // Используем переданные значения или рассчитываем
+    const finalTotalAmount = orderDetails.totalAmount || totalAmount;
+    const finalItemCount = orderDetails.itemCount || itemCount;
 
     const message = `
 🆕 НОВЫЙ ЗАКАЗ #${orderDetails.id}
@@ -43,13 +60,17 @@ async function sendTelegramNotification(orderDetails) {
 📞 Телефон: ${orderDetails.customerPhone}
 📍 Адрес: ${orderDetails.deliveryAddress}
 🍽️ Ресторан: ${orderDetails.restaurantName}
-💰 Сумма: ${orderDetails.totalAmount} ₽
-📦 Товаров: ${orderDetails.itemCount} шт.
+💰 Сумма: ${finalTotalAmount} ₽
+📦 Товаров: ${finalItemCount} шт.
 🕐 Время: ${new Date().toLocaleString('ru-RU')}
 
 Состав заказа:
-${orderDetails.items.map(item => `• ${item.dishName} x${item.quantity} - ${item.totalPrice} ₽`).join('\n')}
-    `;
+${orderDetails.items.map(item => {
+  const price = parseFloat(item.dish_price) || parseFloat(item.price) || 0;
+  const quantity = parseInt(item.quantity) || 1;
+  const itemTotal = price * quantity;
+  return `• ${item.dishName} x${quantity} - ${itemTotal} ₽`;
+}).join('\n')}
 
     const response = await axios.post(
       `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
@@ -1474,29 +1495,37 @@ app.post('/orders', async (req, res) => {
 
         // Отправляем уведомление в Telegram
         try {
+          // Рассчитываем правильные значения для уведомления
+          let notificationTotal = 0;
+          let notificationItemCount = 0;
+          
+          items.forEach(item => {
+            const price = parseFloat(item.dish_price) || parseFloat(item.price) || 0;
+            const quantity = parseInt(item.quantity) || 1;
+            notificationTotal += price * quantity;
+            notificationItemCount += quantity;
+          });
+        
           const notificationData = {
             id: fullOrder.id,
             customerName: customer_name || 'Клиент',
             customerPhone: customer_phone || 'Не указан',
             deliveryAddress: delivery_address,
             restaurantName: restaurant_name || 'Ресторан',
-            totalAmount: parseFloat(fullOrder.total_amount),
-            itemCount: items.length,
+            totalAmount: notificationTotal, // Используем рассчитанное значение
+            itemCount: notificationItemCount, // Используем рассчитанное значение
             items: items.map(item => ({
               dishName: item.dish_name || item.name || 'Блюдо',
               quantity: item.quantity || 1,
-              totalPrice: (parseFloat(item.dish_price) || parseFloat(item.price) || 0) * (item.quantity || 1)
+              dish_price: parseFloat(item.dish_price) || parseFloat(item.price) || 0,
+              price: parseFloat(item.dish_price) || parseFloat(item.price) || 0
             }))
           };
-
+        
           console.log('📊 Данные для уведомления:', notificationData);
-          console.log('💰 total_amount из БД:', fullOrder.total_amount);
-          console.log('📦 Количество items:', items.length);
-
           await sendTelegramNotification(notificationData);
         } catch (telegramError) {
           log(`⚠️ Ошибка отправки уведомления в Telegram: ${telegramError.message}`);
-          // Не прерываем создание заказа из-за ошибки телеграма
         }
 
         res.json({
@@ -1945,25 +1974,35 @@ app.post('/admin/dishes', async (req, res) => {
       });
     }
 
+    const priceValue = req.body.price;
+      const price = parseFloat(priceValue.toString().replace(',', '.'));
+      
+      if (isNaN(price) || price <= 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'Цена должна быть положительным числом'
+        });
+      }
+    
     const result = await pool.query(
-      `INSERT INTO dishes (
-        restaurant_id, name, description, image_url, price,
-        ingredients, preparation_time, is_vegetarian, is_spicy, is_available
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-      RETURNING *`,
-      [
-        restaurant_id,
-        name,
-        description || '',
-        image_url || '',
-        price,
-        ingredients || [],
-        preparation_time || 30,
-        is_vegetarian || false,
-        is_spicy || false,
-        true
-      ]
-    );
+        `INSERT INTO dishes (
+          restaurant_id, name, description, image_url, price,
+          ingredients, preparation_time, is_vegetarian, is_spicy, is_available
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        RETURNING *`,
+        [
+          restaurant_id,
+          name,
+          description || '',
+          image_url || '',
+          price, 
+          ingredients || [],
+          preparation_time || 30,
+          is_vegetarian || false,
+          is_spicy || false,
+          true
+        ]
+      );
 
     res.json({
       success: true,
