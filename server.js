@@ -465,9 +465,9 @@ app.post('/register', async (req, res) => {
         const hashedPassword = await bcrypt.hash(password, 10);
 
         const newUser = await pool.query(
-          `INSERT INTO users (name, email, password, phone, is_email_verified)
+          `INSERT INTO users (name, email, password, phone, email_verified)
            VALUES ($1, $2, $3, $4, $5)
-           RETURNING id, name, email, phone, avatar_url, is_email_verified, created_at`,
+           RETURNING id, name, email, phone, avatar_url, email_verified, created_at`,
           [name, email, hashedPassword, phone || null, false]
         );
 
@@ -489,7 +489,7 @@ app.post('/register', async (req, res) => {
             email: user.email,
             phone: user.phone,
             avatarUrl: user.avatar_url,
-            isEmailVerified: user.is_email_verified,
+            isEmailVerified: user.email_verified,
             createdAt: user.created_at
           }
         });
@@ -567,7 +567,7 @@ app.post('/login', async (req, res) => {
             phone: user.phone,
             avatarUrl: user.avatar_url,
             role: user.role,
-            isEmailVerified: user.is_email_verified,
+            isEmailVerified: user.email_verified,
             createdAt: user.created_at
           }
         });
@@ -650,7 +650,7 @@ app.get('/users/me', async (req, res) => {
     if (isDatabaseConnected && pool) {
       try {
         const userResult = await pool.query(
-          'SELECT id, name, email, phone, avatar_url, role, is_email_verified, created_at FROM users WHERE id = $1',
+          'SELECT id, name, email, phone, avatar_url, role, email_verified, created_at FROM users WHERE id = $1',
           [userId]
         );
 
@@ -669,7 +669,7 @@ app.get('/users/me', async (req, res) => {
           phone: user.phone,
           avatarUrl: user.avatar_url,
           role: user.role,
-          isEmailVerified: user.is_email_verified,
+          isEmailVerified: user.email_verified,
           createdAt: user.created_at
         });
 
