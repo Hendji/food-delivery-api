@@ -189,7 +189,7 @@ async function createOrUpdateTables(client) {
         role VARCHAR(20) DEFAULT 'user',
         telegram_chat_id BIGINT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        is_email_verified BOOLEAN DEFAULT false
+        email_verified BOOLEAN DEFAULT false 
       )
     `);
     log('✅ Таблица users создана/проверена');
